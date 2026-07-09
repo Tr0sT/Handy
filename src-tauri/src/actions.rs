@@ -4,7 +4,7 @@ use crate::audio_feedback::{play_feedback_sound, play_feedback_sound_blocking, S
 use crate::audio_toolkit::{is_microphone_access_denied, is_no_input_device_error, VadPolicy};
 use crate::managers::audio::AudioRecordingManager;
 use crate::managers::history::HistoryManager;
-use crate::managers::model::ModelManager;
+use crate::managers::model::{EngineType, ModelManager};
 use crate::managers::transcription::StreamWorkKind;
 use crate::managers::transcription::TranscriptionManager;
 use crate::settings::{get_settings, AppSettings, OverlayStyle, APPLE_INTELLIGENCE_PROVIDER_ID};
@@ -116,6 +116,12 @@ where
 
 fn should_use_streaming_overlay(style: OverlayStyle, is_streaming: bool) -> bool {
     style == OverlayStyle::Live && is_streaming
+}
+
+fn selected_model_engine(app: &AppHandle, settings: &AppSettings) -> Option<EngineType> {
+    app.state::<Arc<ModelManager>>()
+        .get_model_info(&settings.selected_model)
+        .map(|model| model.engine_type)
 }
 
 async fn post_process_transcription(settings: &AppSettings, transcription: &str) -> Option<String> {
@@ -466,7 +472,16 @@ pub(crate) async fn process_transcription_output(
 }
 
 impl ShortcutAction for TranscribeAction {
-    fn start(&self, app: &AppHandle, binding_id: &str, _shortcut_str: &str) {
+    fn start(&self, app: &AppHandle, binding_id: &str, shortcut_str: &str) {
+        let settings = get_settings(app);
+        if selected_model_engine(app, &settings) == Some(EngineType::CloudCodex) {
+            let action = CloudCodexTranscribeAction {
+                post_process: self.post_process,
+            };
+            action.start(app, binding_id, shortcut_str);
+            return;
+        }
+
         let start_time = Instant::now();
         debug!("TranscribeAction::start called for binding: {}", binding_id);
 
@@ -615,7 +630,16 @@ impl ShortcutAction for TranscribeAction {
         );
     }
 
-    fn stop(&self, app: &AppHandle, binding_id: &str, _shortcut_str: &str) {
+    fn stop(&self, app: &AppHandle, binding_id: &str, shortcut_str: &str) {
+        let settings = get_settings(app);
+        if selected_model_engine(app, &settings) == Some(EngineType::CloudCodex) {
+            let action = CloudCodexTranscribeAction {
+                post_process: self.post_process,
+            };
+            action.stop(app, binding_id, shortcut_str);
+            return;
+        }
+
         // Unregister the cancel shortcut when transcription stops
         shortcut::unregister_cancel_shortcut(app);
 
@@ -868,6 +892,271 @@ impl ShortcutAction for TranscribeAction {
             stop_time.elapsed()
         );
     }
+}
+
+// Cloud STT Transcribe Action — Codex (batch HTTP POST)
+// Records audio locally, then POSTs to chatgpt.com/backend-api/transcribe.
+struct CloudCodexTranscribeAction {
+    post_process: bool,
+}
+
+impl ShortcutAction for CloudCodexTranscribeAction {
+    fn start(&self, app: &AppHandle, binding_id: &str, _shortcut_str: &str) {
+        debug!(
+            "CloudCodexTranscribeAction::start called for binding: {}",
+            binding_id
+        );
+
+        change_tray_icon(app, TrayIconState::Recording);
+        show_recording_overlay(app);
+
+        let rm = app.state::<Arc<AudioRecordingManager>>();
+        let settings = get_settings(app);
+        let is_always_on = settings.always_on_microphone;
+        let vad_policy = if settings.vad_enabled {
+            VadPolicy::Offline
+        } else {
+            VadPolicy::Disabled
+        };
+
+        let binding_id = binding_id.to_string();
+        let mut recording_error: Option<String> = None;
+
+        // Codex is batch — just start recording, no cloud connection yet
+        if is_always_on {
+            let rm_clone = Arc::clone(&rm);
+            let app_clone = app.clone();
+            std::thread::spawn(move || {
+                play_feedback_sound_blocking(&app_clone, SoundType::Start);
+                rm_clone.apply_mute();
+            });
+
+            if let Err(e) = rm.try_start_recording(&binding_id, vad_policy) {
+                recording_error = Some(e);
+            }
+        } else {
+            match rm.try_start_recording(&binding_id, vad_policy) {
+                Ok(()) => {
+                    let app_clone = app.clone();
+                    let rm_clone = Arc::clone(&rm);
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        play_feedback_sound_blocking(&app_clone, SoundType::Start);
+                        rm_clone.apply_mute();
+                    });
+                }
+                Err(e) => {
+                    recording_error = Some(e);
+                }
+            }
+        }
+
+        if recording_error.is_none() {
+            shortcut::register_cancel_shortcut(app);
+        } else {
+            utils::hide_recording_overlay(app);
+            change_tray_icon(app, TrayIconState::Idle);
+            if let Some(err) = recording_error {
+                let _ = app.emit("recording-error", err);
+            }
+        }
+    }
+
+    fn stop(&self, app: &AppHandle, binding_id: &str, _shortcut_str: &str) {
+        shortcut::unregister_cancel_shortcut(app);
+
+        let ah = app.clone();
+        let rm = Arc::clone(&app.state::<Arc<AudioRecordingManager>>());
+        let hm = Arc::clone(&app.state::<Arc<HistoryManager>>());
+
+        change_tray_icon(app, TrayIconState::Transcribing);
+        show_transcribing_overlay(app);
+
+        rm.remove_mute();
+        play_feedback_sound(app, SoundType::Stop);
+
+        let binding_id = binding_id.to_string();
+        let post_process = self.post_process;
+        let cancel_generation = rm.cancel_generation();
+
+        tauri::async_runtime::spawn(async move {
+            let _guard = FinishGuard(ah.clone());
+
+            let samples = rm.stop_recording(&binding_id, cancel_generation);
+
+            // Codex: transcribe the recorded audio via HTTP POST
+            let transcript = if let Some(ref s) = samples {
+                let settings = get_settings(&ah);
+                let language = if settings.selected_language == "auto" {
+                    None
+                } else {
+                    Some(settings.selected_language.as_str())
+                };
+
+                match crate::commands::cloud_stt::codex_transcribe_samples(
+                    &ah, s, language,
+                )
+                .await
+                {
+                    Ok(t) => t,
+                    Err(e) => {
+                        error!("Codex transcription failed: {}", e);
+                        String::new()
+                    }
+                }
+            } else {
+                String::new()
+            };
+
+            finalize_cloud_transcript(
+                &ah,
+                &rm,
+                &hm,
+                transcript,
+                samples,
+                post_process,
+                cancel_generation,
+            )
+            .await;
+        });
+    }
+}
+
+/// Common post-transcription logic for cloud-backed transcription models.
+async fn finalize_cloud_transcript(
+    ah: &AppHandle,
+    rm: &Arc<AudioRecordingManager>,
+    hm: &Arc<HistoryManager>,
+    transcript: String,
+    samples: Option<Vec<f32>>,
+    post_process: bool,
+    cancel_generation: u64,
+) {
+    if transcript.is_empty() {
+        utils::hide_recording_overlay(ah);
+        change_tray_icon(ah, TrayIconState::Idle);
+        return;
+    }
+
+    if rm.was_cancelled_since(cancel_generation) {
+        debug!("Cloud transcription operation cancelled before output handling");
+        utils::hide_recording_overlay(ah);
+        change_tray_icon(ah, TrayIconState::Idle);
+        return;
+    }
+
+    let settings = get_settings(ah);
+    let mut final_text = transcript.clone();
+    let mut post_processed_text: Option<String> = None;
+    let mut post_process_prompt: Option<String> = None;
+
+    if let Some(converted) =
+        maybe_convert_chinese_variant(&settings.selected_language, &transcript).await
+    {
+        final_text = converted;
+    }
+
+    if post_process {
+        show_processing_overlay(ah);
+        if let Some(processed_text) = post_process_transcription(&settings, &final_text).await {
+            post_processed_text = Some(processed_text.clone());
+            final_text = processed_text;
+
+            if let Some(prompt_id) = &settings.post_process_selected_prompt_id {
+                if let Some(prompt) = settings
+                    .post_process_prompts
+                    .iter()
+                    .find(|prompt| &prompt.id == prompt_id)
+                {
+                    post_process_prompt = Some(prompt.prompt.clone());
+                }
+            }
+        }
+    } else if final_text != transcript {
+        post_processed_text = Some(final_text.clone());
+    }
+
+    if rm.was_cancelled_since(cancel_generation) {
+        debug!("Cloud transcription operation cancelled before history save");
+        utils::hide_recording_overlay(ah);
+        change_tray_icon(ah, TrayIconState::Idle);
+        return;
+    }
+
+    if let Some(samples) = samples.filter(|samples| !samples.is_empty()) {
+        let sample_count = samples.len();
+        let file_name = format!("handy-{}.wav", chrono::Utc::now().timestamp());
+        let wav_path = hm.recordings_dir().join(&file_name);
+        let wav_path_for_verify = wav_path.clone();
+        let samples_for_wav = samples;
+        let wav_handle = tauri::async_runtime::spawn_blocking(move || {
+            crate::audio_toolkit::save_wav_file(&wav_path, &samples_for_wav)
+        });
+
+        let wav_saved = match wav_handle.await {
+            Ok(Ok(())) => {
+                match crate::audio_toolkit::verify_wav_file(&wav_path_for_verify, sample_count) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        error!("Cloud WAV verification failed: {}", e);
+                        false
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                error!("Failed to save cloud WAV file: {}", e);
+                false
+            }
+            Err(e) => {
+                error!("Cloud WAV save task panicked: {}", e);
+                false
+            }
+        };
+
+        if wav_saved {
+            if let Err(e) = hm.save_entry(
+                file_name,
+                transcript.clone(),
+                post_process,
+                post_processed_text.clone(),
+                post_process_prompt.clone(),
+            ) {
+                error!("Failed to save cloud transcription to history: {}", e);
+            }
+        }
+    }
+
+    if rm.was_cancelled_since(cancel_generation) {
+        debug!("Cloud transcription operation cancelled before paste");
+        utils::hide_recording_overlay(ah);
+        change_tray_icon(ah, TrayIconState::Idle);
+        return;
+    }
+
+    let ah_clone = ah.clone();
+    let ah_clone2 = ah.clone();
+    let rm_for_paste = Arc::clone(rm);
+    let paste_time = Instant::now();
+    ah.run_on_main_thread(move || {
+        if rm_for_paste.was_cancelled_since(cancel_generation) {
+            debug!("Cloud transcription operation cancelled before paste");
+            utils::hide_recording_overlay(&ah_clone);
+            change_tray_icon(&ah_clone, TrayIconState::Idle);
+            return;
+        }
+
+        match utils::paste(final_text, ah_clone.clone()) {
+            Ok(()) => debug!("Text pasted successfully in {:?}", paste_time.elapsed()),
+            Err(e) => error!("Failed to paste transcription: {}", e),
+        }
+        utils::hide_recording_overlay(&ah_clone);
+        change_tray_icon(&ah_clone, TrayIconState::Idle);
+    })
+    .unwrap_or_else(|e| {
+        error!("Failed to run paste on main thread: {:?}", e);
+        utils::hide_recording_overlay(&ah_clone2);
+        change_tray_icon(&ah_clone2, TrayIconState::Idle);
+    });
 }
 
 // Cancel Action

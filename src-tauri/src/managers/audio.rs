@@ -884,6 +884,17 @@ impl AudioRecordingManager {
         self.recording_active.load(Ordering::SeqCst)
     }
 
+    /// Set a data callback on the recorder that receives resampled 16kHz mono f32
+    /// audio samples in real-time during recording. Used for cloud STT streaming.
+    pub fn set_data_callback(
+        &self,
+        cb: Option<std::sync::Arc<dyn Fn(&[f32]) + Send + Sync + 'static>>,
+    ) {
+        if let Some(rec) = self.recorder.lock().unwrap().as_ref() {
+            rec.set_data_callback(cb);
+        }
+    }
+
     /// Cancel any ongoing recording without returning audio samples
     pub fn cancel_recording(&self) {
         self.cancel_generation.fetch_add(1, Ordering::AcqRel);

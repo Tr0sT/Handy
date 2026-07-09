@@ -23,7 +23,7 @@ mod download;
 
 use download::{HttpDownloadOutcome, DOWNLOAD_STALL_TIMEOUT};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub enum EngineType {
     /// Any GGML/GGUF model loaded through transcribe-cpp (Whisper, Parakeet,
     /// Voxtral, Qwen3-ASR, Nemotron, …). The architecture is auto-detected from
@@ -36,6 +36,9 @@ pub enum EngineType {
     GigaAM,
     Canary,
     Cohere,
+    /// Virtual model that routes batch transcription to the Codex / ChatGPT
+    /// Whisper endpoint instead of loading a local engine.
+    CloudCodex,
 }
 
 /// Where a model comes from and how Handy obtains it — the routing discriminant
@@ -81,7 +84,20 @@ pub struct ModelInfo {
     pub supports_language_detection: bool, // Whether the model can auto-detect language (gates the "Auto" option)
 }
 
+pub const CODEX_LOCAL_MODEL_ID: &str = "codex-local";
+
 const CHINESE_LANGUAGE_CODE: &str = "zh";
+
+const CODEX_LOCAL_LANGUAGES: &[&str] = &[
+    "en", "zh", "yue", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar",
+    "sv", "it", "id", "hi", "fi", "vi", "he", "uk", "el", "ms", "cs", "ro", "da", "hu",
+    "ta", "no", "th", "ur", "hr", "bg", "lt", "la", "mi", "ml", "cy", "sk", "te", "fa",
+    "lv", "bn", "sr", "az", "sl", "kn", "et", "mk", "br", "eu", "is", "hy", "ne", "mn",
+    "bs", "kk", "sq", "sw", "gl", "mr", "pa", "si", "km", "sn", "yo", "so", "af", "oc",
+    "ka", "be", "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo", "ht", "ps", "tk", "nn",
+    "mt", "sa", "lb", "my", "bo", "tl", "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw",
+    "su",
+];
 
 fn recognition_language(language: &str) -> &str {
     match language {
@@ -1110,6 +1126,7 @@ impl ModelManager {
         // only insert ids not already present) instead of showing as a bare cache
         // find. Additive — see `seed_catalog_models`.
         Self::seed_catalog_models(&mut available_models);
+        Self::seed_virtual_models(&mut available_models);
 
         // Auto-discover custom transcribe-cpp models (.bin / .gguf) in the models directory
         if let Err(e) = Self::discover_custom_transcribe_models(&models_dir, &mut available_models)
@@ -1182,6 +1199,37 @@ impl ModelManager {
             }
         }
         info!("Seeded {} catalog model(s) into the registry", added);
+    }
+
+    fn seed_virtual_models(available_models: &mut HashMap<String, ModelInfo>) {
+        available_models
+            .entry(CODEX_LOCAL_MODEL_ID.to_string())
+            .or_insert_with(|| ModelInfo {
+                id: CODEX_LOCAL_MODEL_ID.to_string(),
+                name: "Codex Local".to_string(),
+                description: "Uses Codex Desktop / ChatGPT Whisper for batch transcription."
+                    .to_string(),
+                filename: String::new(),
+                source: ModelSource::Local,
+                size_mb: 0,
+                is_downloaded: true,
+                is_downloading: false,
+                partial_size: 0,
+                is_directory: false,
+                engine_type: EngineType::CloudCodex,
+                accuracy_score: 0.90,
+                speed_score: 0.85,
+                supports_translation: false,
+                is_recommended: false,
+                supported_languages: CODEX_LOCAL_LANGUAGES
+                    .iter()
+                    .map(|lang| (*lang).to_string())
+                    .collect(),
+                supports_language_selection: true,
+                is_custom: false,
+                supports_streaming: false,
+                supports_language_detection: true,
+            });
     }
 
     /// Claim the single rescan slot. Returns a guard that releases it on drop,
@@ -1370,6 +1418,13 @@ impl ModelManager {
         let mut vanished_alternates: Vec<String> = Vec::new();
 
         for model in models.values_mut() {
+            if model.engine_type == EngineType::CloudCodex {
+                model.is_downloaded = true;
+                model.is_downloading = false;
+                model.partial_size = 0;
+                continue;
+            }
+
             if let ModelSource::HuggingFace { repo_id, revision } = &model.source {
                 // A models-dir copy counts too: mirror-fallback downloads land
                 // there, and it makes manual drop-ins of catalog files work.
@@ -1510,7 +1565,7 @@ impl ModelManager {
             if let Some(available_model) = self
                 .get_available_models()
                 .into_iter()
-                .find(|model| model.is_downloaded)
+                .find(|model| model.is_downloaded && model.engine_type != EngineType::CloudCodex)
             {
                 info!(
                     "Auto-selecting model: {} ({})",
@@ -2159,6 +2214,11 @@ impl ModelManager {
         let model_info =
             model_info.ok_or_else(|| anyhow::anyhow!("Model not found: {}", model_id))?;
 
+        if model_info.engine_type == EngineType::CloudCodex {
+            self.update_download_status()?;
+            return Ok(());
+        }
+
         let (url, expected_sha256) = match &model_info.source {
             ModelSource::Url { url, sha256 } => (url.clone(), sha256.clone()),
             ModelSource::HuggingFace { repo_id, revision } => {
@@ -2361,6 +2421,10 @@ impl ModelManager {
 
         debug!("ModelManager: Found model info: {:?}", model_info);
 
+        if model_info.engine_type == EngineType::CloudCodex {
+            return Err(anyhow::anyhow!("Codex Local is a virtual model and cannot be deleted"));
+        }
+
         if let ModelSource::HuggingFace { repo_id, revision } = &model_info.source {
             let is_alternate_quant =
                 Self::is_catalog_alternate_quant(repo_id, &model_info.filename);
@@ -2477,6 +2541,10 @@ impl ModelManager {
 
         if !model_info.is_downloaded {
             return Err(anyhow::anyhow!("Model not available: {}", model_id));
+        }
+
+        if model_info.engine_type == EngineType::CloudCodex {
+            return Err(anyhow::anyhow!("Codex Local has no local model path"));
         }
 
         // Ensure we don't return partial files/directories

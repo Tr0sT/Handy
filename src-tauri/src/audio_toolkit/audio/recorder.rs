@@ -79,6 +79,7 @@ pub struct AudioRecorder {
     audio_cb: Option<AudioFrameCallback>,
     /// Which input channel to use. None = average all (original behavior).
     selected_channel: Option<usize>,
+    data_cb: Arc<Mutex<Option<AudioFrameCallback>>>,
     /// Preferred stream config cached per device name. The two HAL property
     /// queries in `get_preferred_config` cost ~40-85ms per open (worse on
     /// USB/Bluetooth), which lands on the keypress->capture path in on-demand
@@ -98,6 +99,7 @@ impl AudioRecorder {
             level_cb: None,
             audio_cb: None,
             selected_channel: None,
+            data_cb: Arc::new(Mutex::new(None)),
             config_cache: Arc::new(Mutex::new(None)),
         })
     }
@@ -148,6 +150,11 @@ impl AudioRecorder {
         self.selected_channel = channel.map(usize::from);
     }
 
+    /// Set/clear the data callback at runtime (after construction).
+    /// This works even after open() because the worker thread shares the same Arc<Mutex<>>.
+    pub fn set_data_callback(&self, cb: Option<AudioFrameCallback>) {
+        *self.data_cb.lock().unwrap() = cb;
+    }
     pub fn open(&mut self, device: Option<Device>) -> Result<(), Box<dyn std::error::Error>> {
         if self.worker_handle.is_some() {
             if !self.is_capture_worker_dead() {
@@ -179,6 +186,7 @@ impl AudioRecorder {
         // Move the optional real-time audio frame callback into the worker thread
         let audio_cb = self.audio_cb.clone();
         let selected_channel = self.selected_channel;
+        let data_cb = Arc::clone(&self.data_cb);
         let config_cache = Arc::clone(&self.config_cache);
 
         let worker = std::thread::spawn(move || {
@@ -314,6 +322,7 @@ impl AudioRecorder {
                         cmd_rx,
                         level_cb,
                         audio_cb,
+                        data_cb,
                         stop_flag,
                         stream_running_at,
                     );
@@ -604,6 +613,7 @@ fn run_consumer(
     cmd_rx: mpsc::Receiver<Cmd>,
     level_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
     audio_cb: Option<AudioFrameCallback>,
+    data_cb: Arc<Mutex<Option<AudioFrameCallback>>>,
     stop_flag: Arc<AtomicBool>,
     stream_running_at: Instant,
 ) {
@@ -651,6 +661,7 @@ fn run_consumer(
         vad_policy: VadPolicy,
         vad: &Option<VadConfig>,
         audio_cb: &Option<AudioFrameCallback>,
+        data_cb: &Arc<Mutex<Option<AudioFrameCallback>>>,
         out_buf: &mut Vec<f32>,
     ) {
         if !recording {
@@ -660,6 +671,9 @@ fn run_consumer(
         let mut emit = |buf: &[f32]| {
             out_buf.extend_from_slice(buf);
             if let Some(cb) = audio_cb {
+                cb(buf);
+            }
+            if let Some(cb) = data_cb.lock().unwrap().as_ref().cloned() {
                 cb(buf);
             }
         };
@@ -726,6 +740,7 @@ fn run_consumer(
                                 vad_policy,
                                 &vad,
                                 &audio_cb,
+                                &data_cb,
                                 &mut processed_samples,
                             )
                         });
@@ -745,6 +760,7 @@ fn run_consumer(
                                         vad_policy,
                                         &vad,
                                         &audio_cb,
+                                        &data_cb,
                                         &mut processed_samples,
                                     )
                                 });
@@ -764,6 +780,7 @@ fn run_consumer(
                             vad_policy,
                             &vad,
                             &audio_cb,
+                            &data_cb,
                             &mut processed_samples,
                         )
                     });
@@ -820,6 +837,7 @@ fn run_consumer(
                     vad_policy,
                     &vad,
                     &audio_cb,
+                    &data_cb,
                     &mut processed_samples,
                 )
             });

@@ -5,6 +5,19 @@ export interface Language {
 
 export const CHINESE_LANGUAGE_CODE = "zh";
 
+/**
+ * Claude.ai voice pipeline supported language codes (20 languages).
+ * Extracted from Claude Code's voice_stream module — the backend only
+ * accepts these codes via the `language` query parameter.
+ */
+export const CLAUDE_VOICE_LANGUAGES = new Set([
+  "en", "es", "fr", "ja", "de", "pt", "it", "ko", "hi", "id",
+  "ru", "pl", "tr", "nl", "uk", "el", "cs", "da", "sv", "no",
+]);
+
+/**
+ * Full Whisper language list — used by local models and Codex (ChatGPT Whisper).
+ */
 export const LANGUAGES: Language[] = [
   { value: "auto", label: "Auto Detect" },
   { value: "en", label: "English" },
