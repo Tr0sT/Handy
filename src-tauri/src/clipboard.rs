@@ -724,6 +724,15 @@ fn paste_direct(
     with_enigo(app_handle, |enigo| input::paste_text_direct(enigo, text))
 }
 
+#[cfg(target_os = "linux")]
+fn direct_typing_needs_clipboard_fallback(text: &str, typing_tool: TypingTool) -> bool {
+    !text.is_ascii()
+        && matches!(
+            typing_tool,
+            TypingTool::Auto | TypingTool::Dotool | TypingTool::Ydotool | TypingTool::Xdotool
+        )
+}
+
 pub(crate) fn send_return_key(enigo: &mut Enigo, key_type: AutoSubmitKey) -> Result<(), String> {
     match key_type {
         AutoSubmitKey::Enter => {
@@ -795,12 +804,22 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
             info!("PasteMethod::None selected - skipping paste action");
         }
         PasteMethod::Direct => {
-            paste_direct(
-                &text,
-                &app_handle,
-                #[cfg(target_os = "linux")]
-                settings.typing_tool,
-            )?;
+            #[cfg(target_os = "linux")]
+            if direct_typing_needs_clipboard_fallback(&text, settings.typing_tool) {
+                info!("Direct text input contains non-ASCII text; using clipboard paste fallback");
+                paste_via_clipboard(
+                    &text,
+                    &app_handle,
+                    &PasteMethod::CtrlV,
+                    paste_delay_ms,
+                    paste_delay_after_ms,
+                )?;
+            } else {
+                paste_direct(&text, &app_handle, settings.typing_tool)?;
+            }
+
+            #[cfg(not(target_os = "linux"))]
+            paste_direct(&text, &app_handle)?;
         }
         PasteMethod::CtrlV | PasteMethod::CtrlShiftV | PasteMethod::ShiftInsert => {
             // Debug-gated receipt-sequenced paste (#502): restore the clipboard
@@ -1011,5 +1030,53 @@ e.g. 28:1 28:0 means pressing on the Enter button on a standard US keyboard.
             .expect("external script should return without waiting for its child");
         fs::remove_file(script_path).expect("remove external script");
         assert!(result.is_ok());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn direct_typing_keeps_ascii_on_direct_path() {
+        assert!(!direct_typing_needs_clipboard_fallback(
+            "one, two, three.",
+            TypingTool::Auto
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn direct_typing_falls_back_for_unicode_with_auto_tool() {
+        assert!(direct_typing_needs_clipboard_fallback(
+            "Раз, два, три.",
+            TypingTool::Auto
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn direct_typing_allows_unicode_for_text_aware_wayland_tools() {
+        assert!(!direct_typing_needs_clipboard_fallback(
+            "Раз, два, три.",
+            TypingTool::Wtype
+        ));
+        assert!(!direct_typing_needs_clipboard_fallback(
+            "Раз, два, три.",
+            TypingTool::Kwtype
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn direct_typing_falls_back_for_unicode_with_keycode_tools() {
+        assert!(direct_typing_needs_clipboard_fallback(
+            "Раз, два, три.",
+            TypingTool::Ydotool
+        ));
+        assert!(direct_typing_needs_clipboard_fallback(
+            "Раз, два, три.",
+            TypingTool::Dotool
+        ));
+        assert!(direct_typing_needs_clipboard_fallback(
+            "Раз, два, три.",
+            TypingTool::Xdotool
+        ));
     }
 }

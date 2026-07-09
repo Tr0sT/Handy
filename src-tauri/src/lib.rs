@@ -6,6 +6,7 @@ pub mod audio_toolkit;
 mod autostart;
 mod catalog;
 pub mod cli;
+mod cloud_stt;
 mod clipboard;
 mod commands;
 mod helpers;
@@ -217,6 +218,16 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(transcription_manager.clone());
     app_handle.manage(history_manager.clone());
     app_handle.manage(tray::TrayState::new());
+
+    // Initialize cloud STT auth managers and session state
+    let claude_auth_manager =
+        Arc::new(cloud_stt::claude_auth::ClaudeAuthManager::new(app_handle));
+    app_handle.manage(claude_auth_manager);
+    let codex_auth_manager = Arc::new(cloud_stt::codex_auth::CodexAuthManager::new());
+    app_handle.manage(codex_auth_manager);
+    app_handle.manage(commands::cloud_stt::CloudSttSessionState(
+        std::sync::Mutex::new(None),
+    ));
 
     // Note: Shortcuts are NOT initialized here.
     // The frontend is responsible for calling the `initialize_shortcuts` command
@@ -762,6 +773,18 @@ pub fn run(cli_args: CliArgs) {
             commands::history::retry_history_entry_transcription,
             commands::history::update_history_limit,
             commands::history::update_recording_retention_period,
+            commands::cloud_stt::get_claude_auth_state,
+            commands::cloud_stt::set_claude_access_token,
+            commands::cloud_stt::claude_logout,
+            commands::cloud_stt::import_claude_code_credentials,
+            commands::cloud_stt::get_codex_auth_state,
+            commands::cloud_stt::set_codex_access_token,
+            commands::cloud_stt::import_codex_credentials,
+            commands::cloud_stt::codex_logout,
+            commands::cloud_stt::start_cloud_stt,
+            commands::cloud_stt::stop_cloud_stt,
+            commands::cloud_stt::send_cloud_stt_audio,
+            commands::cloud_stt::is_cloud_stt_connected,
             helpers::clamshell::is_laptop,
         ])
         .events(collect_events![

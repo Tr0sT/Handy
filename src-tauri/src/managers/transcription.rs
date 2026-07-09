@@ -482,10 +482,44 @@ impl TranscriptionManager {
         model_id: &str,
         device_index: Option<usize>,
     ) -> Result<()> {
-        apply_accelerator_settings(&self.app_handle);
-
         let load_start = std::time::Instant::now();
         debug!("Starting to load model: {}", model_id);
+
+        let model_info = self
+            .model_manager
+            .get_model_info(model_id)
+            .ok_or_else(|| anyhow::anyhow!("Model not found: {}", model_id))?;
+
+        // Virtual cloud-backed models participate in selection/status like a
+        // loaded model, but there is no local engine or file to initialize.
+        if model_info.engine_type == EngineType::CloudCodex {
+            {
+                let mut engine = self.lock_engine();
+                *engine = None;
+            }
+            {
+                let mut current_model = self.current_model_id.lock().unwrap();
+                *current_model = Some(model_id.to_string());
+            }
+            self.touch_activity();
+            let _ = self.app_handle.emit(
+                "model-state-changed",
+                ModelStateEvent {
+                    event_type: "loading_completed".to_string(),
+                    model_id: Some(model_id.to_string()),
+                    model_name: Some(model_info.name.clone()),
+                    error: None,
+                },
+            );
+            debug!(
+                "Selected virtual transcription model: {} (took {}ms)",
+                model_id,
+                load_start.elapsed().as_millis()
+            );
+            return Ok(());
+        }
+
+        apply_accelerator_settings(&self.app_handle);
 
         // Emit loading started event
         let _ = self.app_handle.emit(
@@ -497,11 +531,6 @@ impl TranscriptionManager {
                 error: None,
             },
         );
-
-        let model_info = self
-            .model_manager
-            .get_model_info(model_id)
-            .ok_or_else(|| anyhow::anyhow!("Model not found: {}", model_id))?;
 
         if !model_info.is_downloaded {
             let error_msg = "Model not downloaded";
@@ -695,6 +724,7 @@ impl TranscriptionManager {
                 })?;
                 LoadedEngine::Cohere(engine)
             }
+            EngineType::CloudCodex => unreachable!("CloudCodex is handled before local loading"),
         };
 
         // Update the current engine and model ID
@@ -732,6 +762,24 @@ impl TranscriptionManager {
 
     /// Kicks off the model loading in a background thread if it's not already loaded
     pub fn initiate_model_load(&self) {
+        let settings = get_settings(&self.app_handle);
+        if self
+            .model_manager
+            .get_model_info(&settings.selected_model)
+            .is_some_and(|model| model.engine_type == EngineType::CloudCodex)
+        {
+            if self
+                .current_model_id
+                .lock()
+                .unwrap()
+                .as_deref()
+                != Some(settings.selected_model.as_str())
+            {
+                let _ = self.load_model(&settings.selected_model);
+            }
+            return;
+        }
+
         let mut is_loading = self.is_loading.lock().unwrap();
         if *is_loading {
             return;
@@ -750,7 +798,6 @@ impl TranscriptionManager {
                     .reload_model_on_next_use
                     .store(false, Ordering::Release);
             }
-            let settings = get_settings(&self_clone.app_handle);
             if let Err(e) = self_clone.load_model(&settings.selected_model) {
                 error!("Failed to load model: {}", e);
             }
@@ -762,7 +809,21 @@ impl TranscriptionManager {
 
     pub fn get_current_model(&self) -> Option<String> {
         let current_model = self.current_model_id.lock().unwrap();
-        current_model.clone()
+        if current_model.is_some() {
+            return current_model.clone();
+        }
+        drop(current_model);
+
+        let settings = get_settings(&self.app_handle);
+        if self
+            .model_manager
+            .get_model_info(&settings.selected_model)
+            .is_some_and(|model| model.engine_type == EngineType::CloudCodex)
+        {
+            Some(settings.selected_model)
+        } else {
+            None
+        }
     }
 
     /// The compute backend the currently-loaded engine is bound to, for
