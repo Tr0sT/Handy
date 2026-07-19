@@ -5,7 +5,13 @@ use crate::cloud_stt::claude_session::CloudSttSession;
 use crate::cloud_stt::codex_auth::{CodexAuthManager, CodexAuthState};
 use log::{debug, info};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tauri::{AppHandle, Manager};
+
+/// A healthy Codex transcription normally completes within a few seconds.
+/// Bound the entire operation (including token refresh and a possible retry)
+/// so a stalled network request cannot leave Handy in the transcribing state.
+const CODEX_TRANSCRIPTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ---------------------------------------------------------------------------
 // Managed state
@@ -166,10 +172,7 @@ pub fn is_cloud_stt_connected(app: AppHandle) -> Result<bool, String> {
     let session_state = app.state::<CloudSttSessionState>();
     let current = session_state.0.lock().unwrap();
 
-    Ok(current
-        .as_ref()
-        .map(|s| s.is_connected())
-        .unwrap_or(false))
+    Ok(current.as_ref().map(|s| s.is_connected()).unwrap_or(false))
 }
 
 // ---------------------------------------------------------------------------
@@ -177,10 +180,7 @@ pub fn is_cloud_stt_connected(app: AppHandle) -> Result<bool, String> {
 // ---------------------------------------------------------------------------
 
 /// Start a Claude streaming STT session (called from CloudTranscribeAction).
-pub fn start_claude_stt_internal(
-    app: &AppHandle,
-    language: Option<String>,
-) -> Result<(), String> {
+pub fn start_claude_stt_internal(app: &AppHandle, language: Option<String>) -> Result<(), String> {
     let auth = app.state::<Arc<ClaudeAuthManager>>();
     let token = auth
         .get_access_token()
@@ -245,5 +245,15 @@ pub async fn codex_transcribe_samples(
     language: Option<&str>,
 ) -> Result<String, String> {
     let auth = app.state::<Arc<CodexAuthManager>>();
-    crate::cloud_stt::codex_stt::transcribe_samples(&auth, samples, language).await
+    tokio::time::timeout(
+        CODEX_TRANSCRIPTION_TIMEOUT,
+        crate::cloud_stt::codex_stt::transcribe_samples(&auth, samples, language),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "Codex transcription timed out after {} seconds. Check your network connection and try again.",
+            CODEX_TRANSCRIPTION_TIMEOUT.as_secs()
+        )
+    })?
 }

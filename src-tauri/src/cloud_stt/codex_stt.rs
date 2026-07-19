@@ -169,20 +169,16 @@ pub async fn transcribe_samples(
     let url = format!("{}/transcribe", CodexAuthManager::api_base_url());
     info!(
         "[codex_stt] POST {} (boundary={}, size={})",
-        url, boundary, body.len()
+        url,
+        boundary,
+        body.len()
     );
 
     // Get valid token (auto-refreshes if expired, matches getAuthToken flow)
     let (token, account_id) = auth.get_valid_token().await?;
 
-    let resp = do_transcribe_request(
-        &url,
-        body.clone(),
-        &boundary,
-        &token,
-        account_id.as_deref(),
-    )
-    .await?;
+    let resp =
+        do_transcribe_request(&url, body.clone(), &boundary, &token, account_id.as_deref()).await?;
 
     // 401 retry with token refresh (matches Mhe.handleRequest):
     //   let p = await l(d);
@@ -197,14 +193,9 @@ pub async fn transcribe_samples(
         auth.reload_from_file();
         let (new_token, new_account_id) = auth.get_valid_token().await?;
 
-        let retry_resp = do_transcribe_request(
-            &url,
-            body,
-            &boundary,
-            &new_token,
-            new_account_id.as_deref(),
-        )
-        .await?;
+        let retry_resp =
+            do_transcribe_request(&url, body, &boundary, &new_token, new_account_id.as_deref())
+                .await?;
 
         if !retry_resp.status().is_success() {
             let status = retry_resp.status();

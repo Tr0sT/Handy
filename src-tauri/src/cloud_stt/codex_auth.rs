@@ -36,9 +36,7 @@ impl Default for CodexAuthState {
     fn default() -> Self {
         Self {
             is_logged_in: false,
-            has_auth_file: auth_file_path()
-                .map(|p| p.exists())
-                .unwrap_or(false),
+            has_auth_file: auth_file_path().map(|p| p.exists()).unwrap_or(false),
         }
     }
 }
@@ -98,9 +96,7 @@ fn decode_jwt_payload(token: &str) -> Option<serde_json::Value> {
         3 => format!("{}=", payload),
         _ => payload.to_string(),
     };
-    let bytes = URL_SAFE_NO_PAD
-        .decode(padded.trim_end_matches('='))
-        .ok()?;
+    let bytes = URL_SAFE_NO_PAD.decode(padded.trim_end_matches('=')).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
@@ -298,10 +294,10 @@ impl CodexAuthManager {
 
         // Read the refresh token from file
         let path = auth_file_path().ok_or("No auth file path")?;
-        let contents =
-            std::fs::read_to_string(&path).map_err(|e| format!("Failed to read auth file: {}", e))?;
-        let mut auth_file: CodexAuthFile =
-            serde_json::from_str(&contents).map_err(|e| format!("Failed to parse auth file: {}", e))?;
+        let contents = std::fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read auth file: {}", e))?;
+        let mut auth_file: CodexAuthFile = serde_json::from_str(&contents)
+            .map_err(|e| format!("Failed to parse auth file: {}", e))?;
 
         let refresh_token = auth_file
             .tokens
@@ -354,10 +350,7 @@ impl CodexAuthManager {
     }
 
     /// Build auth headers matching applyDesktopAuthHeaders().
-    pub fn build_auth_headers(
-        token: &str,
-        account_id: Option<&str>,
-    ) -> Vec<(String, String)> {
+    pub fn build_auth_headers(token: &str, account_id: Option<&str>) -> Vec<(String, String)> {
         let mut headers = vec![
             ("Authorization".to_string(), format!("Bearer {}", token)),
             ("originator".to_string(), ORIGINATOR.to_string()),

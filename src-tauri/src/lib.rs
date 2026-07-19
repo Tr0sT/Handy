@@ -6,8 +6,8 @@ pub mod audio_toolkit;
 mod autostart;
 mod catalog;
 pub mod cli;
-mod cloud_stt;
 mod clipboard;
+mod cloud_stt;
 mod commands;
 mod helpers;
 mod input;
@@ -220,8 +220,7 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(tray::TrayState::new());
 
     // Initialize cloud STT auth managers and session state
-    let claude_auth_manager =
-        Arc::new(cloud_stt::claude_auth::ClaudeAuthManager::new(app_handle));
+    let claude_auth_manager = Arc::new(cloud_stt::claude_auth::ClaudeAuthManager::new(app_handle));
     app_handle.manage(claude_auth_manager);
     let codex_auth_manager = Arc::new(cloud_stt::codex_auth::CodexAuthManager::new());
     app_handle.manage(codex_auth_manager);
@@ -900,6 +899,7 @@ pub fn run(cli_args: CliArgs) {
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_macos_permissions::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())

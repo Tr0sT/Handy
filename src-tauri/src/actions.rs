@@ -32,11 +32,14 @@ struct RecordingErrorEvent {
     detail: Option<String>,
 }
 
-/// Drop guard that notifies the [`TranscriptionCoordinator`] when the
-/// transcription pipeline finishes — whether it completes normally or panics.
+/// Drop guard that restores the idle UI and notifies the
+/// [`TranscriptionCoordinator`] when the transcription pipeline finishes —
+/// whether it completes normally, returns early, or panics.
 struct FinishGuard(AppHandle);
 impl Drop for FinishGuard {
     fn drop(&mut self) {
+        utils::hide_recording_overlay(&self.0);
+        change_tray_icon(&self.0, TrayIconState::Idle);
         if let Some(c) = self.0.try_state::<TranscriptionCoordinator>() {
             c.notify_processing_finished();
         }
@@ -1003,7 +1006,10 @@ impl ShortcutAction for CloudCodexTranscribeAction {
 
             let samples = rm.stop_recording(&binding_id, cancel_generation);
 
-            // Codex: transcribe the recorded audio via HTTP POST
+            // Codex: transcribe the recorded audio via HTTP POST. Do not turn
+            // request failures into an empty successful transcript: surface
+            // the error and leave the pipeline through the FinishGuard so the
+            // tray/overlay cannot remain stuck in the transcribing state.
             let transcript = if let Some(ref s) = samples {
                 let settings = get_settings(&ah);
                 let language = if settings.selected_language == "auto" {
@@ -1012,15 +1018,14 @@ impl ShortcutAction for CloudCodexTranscribeAction {
                     Some(settings.selected_language.as_str())
                 };
 
-                match crate::commands::cloud_stt::codex_transcribe_samples(
-                    &ah, s, language,
-                )
-                .await
-                {
+                match crate::commands::cloud_stt::codex_transcribe_samples(&ah, s, language).await {
                     Ok(t) => t,
                     Err(e) => {
                         error!("Codex transcription failed: {}", e);
-                        String::new()
+                        if !rm.was_cancelled_since(cancel_generation) {
+                            let _ = ah.emit("transcription-error", e);
+                        }
+                        return;
                     }
                 }
             } else {

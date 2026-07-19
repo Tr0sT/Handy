@@ -396,9 +396,7 @@ async fn run_stt_stream(
                             );
                         }
                         "error" => {
-                            let msg = ws_msg
-                                .message
-                                .unwrap_or_else(|| "server error".to_string());
+                            let msg = ws_msg.message.unwrap_or_else(|| "server error".to_string());
                             error!("[cloud_stt] Server error: {}", msg);
                             let _ = app_handle.emit(
                                 "cloud-stt-status",
