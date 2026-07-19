@@ -752,11 +752,7 @@ impl TranscriptionManager {
             .get_model_info(&settings.selected_model)
             .is_some_and(|model| model.engine_type == EngineType::CloudCodex)
         {
-            if self
-                .current_model_id
-                .lock()
-                .unwrap()
-                .as_deref()
+            if self.current_model_id.lock().unwrap().as_deref()
                 != Some(settings.selected_model.as_str())
             {
                 let _ = self.load_model(&settings.selected_model);

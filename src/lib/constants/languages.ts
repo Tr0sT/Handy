@@ -11,8 +11,26 @@ export const CHINESE_LANGUAGE_CODE = "zh";
  * accepts these codes via the `language` query parameter.
  */
 export const CLAUDE_VOICE_LANGUAGES = new Set([
-  "en", "es", "fr", "ja", "de", "pt", "it", "ko", "hi", "id",
-  "ru", "pl", "tr", "nl", "uk", "el", "cs", "da", "sv", "no",
+  "en",
+  "es",
+  "fr",
+  "ja",
+  "de",
+  "pt",
+  "it",
+  "ko",
+  "hi",
+  "id",
+  "ru",
+  "pl",
+  "tr",
+  "nl",
+  "uk",
+  "el",
+  "cs",
+  "da",
+  "sv",
+  "no",
 ]);
 
 /**
