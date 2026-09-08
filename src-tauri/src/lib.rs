@@ -7,6 +7,7 @@ mod autostart;
 mod catalog;
 pub mod cli;
 mod clipboard;
+mod cloud_stt;
 mod commands;
 mod helpers;
 mod input;
@@ -21,6 +22,7 @@ mod settings;
 mod shortcut;
 mod signal_handle;
 mod transcription_coordinator;
+mod transcription_pipeline;
 mod tray;
 mod tray_i18n;
 mod utils;
@@ -217,6 +219,15 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(transcription_manager.clone());
     app_handle.manage(history_manager.clone());
     app_handle.manage(tray::TrayState::new());
+
+    // Initialize cloud STT auth managers and session state
+    let claude_auth_manager = Arc::new(cloud_stt::claude_auth::ClaudeAuthManager::new(app_handle));
+    app_handle.manage(claude_auth_manager);
+    let codex_auth_manager = Arc::new(cloud_stt::codex_auth::CodexAuthManager::new());
+    app_handle.manage(codex_auth_manager);
+    app_handle.manage(commands::cloud_stt::CloudSttSessionState(
+        std::sync::Mutex::new(None),
+    ));
 
     // Note: Shortcuts are NOT initialized here.
     // The frontend is responsible for calling the `initialize_shortcuts` command
@@ -571,8 +582,17 @@ fn run_headless_transcription(app: &AppHandle, args: &CliArgs) -> i32 {
             }
         }
         let t = Instant::now();
-        match tm.transcribe(samples.clone()) {
-            Ok(out) => text = out,
+        match tauri::async_runtime::block_on(tm.transcribe_audio(
+            samples.clone(),
+            &model_id,
+            false,
+            || false,
+        )) {
+            Ok(Some(out)) => text = out,
+            Ok(None) => {
+                eprintln!("error: transcription cancelled");
+                return 1;
+            }
             Err(e) => {
                 eprintln!("error: transcribe failed: {}", e);
                 return 1;
@@ -618,34 +638,8 @@ fn run_headless_transcription(app: &AppHandle, args: &CliArgs) -> i32 {
     0
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run(cli_args: CliArgs) {
-    // Avoid ggml-metal residency-set teardown assertions when a native engine
-    // outlives the Tauri shutdown sequence (#1902). This must happen before
-    // transcribe-cpp initializes its Metal device. Advanced users can restore
-    // upstream residency behavior with HANDY_METAL_RESIDENCY=1.
-    #[cfg(target_os = "macos")]
-    if std::env::var("HANDY_METAL_RESIDENCY").as_deref() == Ok("1") {
-        // ggml treats GGML_METAL_NO_RESIDENCY as presence-based, so remove an
-        // inherited value as well when explicitly opting back in.
-        std::env::remove_var("GGML_METAL_NO_RESIDENCY");
-    } else {
-        std::env::set_var("GGML_METAL_NO_RESIDENCY", "1");
-    }
-
-    // Pin glibc's dynamic mmap threshold before the first large allocation,
-    // so per-dictation transient buffers are returned to the OS on free
-    // instead of accumulating in malloc arenas (#1792). No-op off Linux/glibc.
-    memory::init_allocator();
-
-    // Detect portable mode before anything else
-    portable::init();
-
-    // Parse console logging directives from RUST_LOG, falling back to info-level logging
-    // when the variable is unset
-    let console_filter = build_console_filter();
-
-    let specta_builder = Builder::<tauri::Wry>::new()
+fn command_bindings() -> Builder<tauri::Wry> {
+    Builder::<tauri::Wry>::new()
         .commands(collect_commands![
             shortcut::change_binding,
             shortcut::reset_binding,
@@ -668,6 +662,7 @@ pub fn run(cli_args: CliArgs) {
             shortcut::change_paste_delay_after_ms_setting,
             shortcut::change_reliable_paste_setting,
             shortcut::change_paste_method_setting,
+            shortcut::change_direct_input_fallback_setting,
             shortcut::get_available_typing_tools,
             shortcut::change_typing_tool_setting,
             shortcut::change_external_script_path_setting,
@@ -762,13 +757,76 @@ pub fn run(cli_args: CliArgs) {
             commands::history::retry_history_entry_transcription,
             commands::history::update_history_limit,
             commands::history::update_recording_retention_period,
+            commands::cloud_stt::get_claude_auth_state,
+            commands::cloud_stt::set_claude_access_token,
+            commands::cloud_stt::claude_logout,
+            commands::cloud_stt::import_claude_code_credentials,
+            commands::cloud_stt::get_codex_auth_state,
+            commands::cloud_stt::set_codex_access_token,
+            commands::cloud_stt::import_codex_credentials,
+            commands::cloud_stt::codex_logout,
+            commands::cloud_stt::start_cloud_stt,
+            commands::cloud_stt::stop_cloud_stt,
+            commands::cloud_stt::send_cloud_stt_audio,
+            commands::cloud_stt::is_cloud_stt_connected,
             helpers::clamshell::is_laptop,
         ])
         .events(collect_events![
             managers::history::HistoryUpdatePayload,
             managers::transcription::StreamTextEvent,
             managers::transcription::StreamPhaseEvent,
-        ]);
+        ])
+}
+
+#[test]
+fn generated_typescript_bindings_are_current() {
+    let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/bindings.ts");
+    let temporary = tempfile::NamedTempFile::new().unwrap();
+    command_bindings()
+        .export(
+            Typescript::default().bigint(BigIntExportBehavior::Number),
+            temporary.path(),
+        )
+        .unwrap();
+    let generated = std::fs::read_to_string(temporary.path()).unwrap();
+    if std::env::var_os("HANDY_UPDATE_BINDINGS").is_some() {
+        std::fs::write(&output, &generated).unwrap();
+    }
+    assert_eq!(
+        std::fs::read_to_string(output).unwrap(),
+        generated,
+        "Run HANDY_UPDATE_BINDINGS=1 cargo test --lib generated_typescript_bindings_are_current"
+    );
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run(cli_args: CliArgs) {
+    // Avoid ggml-metal residency-set teardown assertions when a native engine
+    // outlives the Tauri shutdown sequence (#1902). This must happen before
+    // transcribe-cpp initializes its Metal device. Advanced users can restore
+    // upstream residency behavior with HANDY_METAL_RESIDENCY=1.
+    #[cfg(target_os = "macos")]
+    if std::env::var("HANDY_METAL_RESIDENCY").as_deref() == Ok("1") {
+        // ggml treats GGML_METAL_NO_RESIDENCY as presence-based, so remove an
+        // inherited value as well when explicitly opting back in.
+        std::env::remove_var("GGML_METAL_NO_RESIDENCY");
+    } else {
+        std::env::set_var("GGML_METAL_NO_RESIDENCY", "1");
+    }
+
+    // Pin glibc's dynamic mmap threshold before the first large allocation,
+    // so per-dictation transient buffers are returned to the OS on free
+    // instead of accumulating in malloc arenas (#1792). No-op off Linux/glibc.
+    memory::init_allocator();
+
+    // Detect portable mode before anything else
+    portable::init();
+
+    // Parse console logging directives from RUST_LOG, falling back to info-level logging
+    // when the variable is unset
+    let console_filter = build_console_filter();
+
+    let specta_builder = command_bindings();
 
     #[cfg(debug_assertions)] // <- Only export on non-release builds
     specta_builder
@@ -877,6 +935,7 @@ pub fn run(cli_args: CliArgs) {
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_macos_permissions::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())

@@ -2,6 +2,11 @@ import { useEffect, useState, useRef, type ReactNode } from "react";
 import { toast, Toaster } from "sonner";
 import { useTranslation } from "react-i18next";
 import { listen } from "@tauri-apps/api/event";
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
 import { platform } from "@tauri-apps/plugin-os";
 import {
   checkAccessibilityPermission,
@@ -27,6 +32,26 @@ const renderSettingsContent = (section: SidebarSection) => {
   const ActiveComponent =
     SECTIONS_CONFIG[section]?.component || SECTIONS_CONFIG.general.component;
   return <ActiveComponent />;
+};
+
+const showTranscriptionErrorNotification = async (
+  title: string,
+  body: string,
+) => {
+  try {
+    let permissionGranted = await isPermissionGranted();
+    if (!permissionGranted) {
+      permissionGranted = (await requestPermission()) === "granted";
+    }
+
+    if (permissionGranted) {
+      sendNotification({ title, body });
+    }
+  } catch (error) {
+    // A notification failure must not interfere with the in-app toast or with
+    // resetting the transcription state in the backend.
+    console.warn("Failed to show transcription error notification:", error);
+  }
 };
 
 function App() {
@@ -144,9 +169,12 @@ function App() {
   // The payload is the backend error message (also logged to handy.log).
   useEffect(() => {
     const unlisten = listen<string>("transcription-error", (event) => {
-      toast.error(t("errors.transcriptionFailedTitle"), {
-        description: event.payload,
+      const title = t("errors.transcriptionFailedTitle");
+      const description = event.payload;
+      toast.error(title, {
+        description,
       });
+      void showTranscriptionErrorNotification(title, description);
     });
     return () => {
       unlisten.then((fn) => fn());

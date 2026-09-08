@@ -907,6 +907,18 @@ pub fn change_paste_method_setting(app: AppHandle, method: String) -> Result<(),
 
 #[tauri::command]
 #[specta::specta]
+pub fn change_direct_input_fallback_setting(
+    app: AppHandle,
+    fallback: crate::settings::DirectInputFallback,
+) -> Result<(), String> {
+    let mut settings = settings::get_settings(&app);
+    settings.direct_input_fallback = fallback;
+    settings::write_settings(&app, settings);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn get_available_typing_tools() -> Vec<String> {
     #[cfg(target_os = "linux")]
     {

@@ -319,6 +319,7 @@
         }
       },
       "pasteMethod": {
+        "unicodeFallback": "Phương án dán qua bộ nhớ tạm cho Unicode",
         "title": "Phương thức dán",
         "description": "Chọn cách chèn văn bản. Trực tiếp: mô phỏng gõ phím qua đầu vào hệ thống. Không có: bỏ qua dán, chỉ cập nhật lịch sử/clipboard.",
         "options": {

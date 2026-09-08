@@ -319,6 +319,7 @@
         }
       },
       "pasteMethod": {
+        "unicodeFallback": "Udklipsholderalternativ til Unicode",
         "title": "Indsætningsmetode",
         "description": "Vælg, hvordan tekst indsættes. Direkte: simulerer tastetryk via systeminput. Ingen: springer indsætning over, opdaterer kun historik/udklipsholder.",
         "options": {
