@@ -5,7 +5,7 @@ import { SettingContainer } from "../ui/SettingContainer";
 import { Input } from "../ui/Input";
 import { useSettings } from "../../hooks/useSettings";
 import { useOsType } from "../../hooks/useOsType";
-import type { PasteMethod } from "@/bindings";
+import type { PasteMethod, DirectInputFallback } from "@/bindings";
 
 interface PasteMethodProps {
   descriptionMode?: "inline" | "tooltip";
@@ -98,6 +98,28 @@ export const PasteMethodSetting: React.FC<PasteMethodProps> = React.memo(
             }
             disabled={isUpdating("paste_method")}
           />
+          {osType === "linux" && selectedMethod === "direct" && (
+            <label className="flex flex-col gap-1">
+              <span className="text-sm">
+                {t("settings.advanced.pasteMethod.unicodeFallback")}
+              </span>
+              <Dropdown
+                options={pasteMethodOptions.filter((option) =>
+                  ["ctrl_v", "ctrl_shift_v", "shift_insert", "none"].includes(
+                    option.value,
+                  ),
+                )}
+                selectedValue={getSetting("direct_input_fallback") || "ctrl_v"}
+                onSelect={(value) =>
+                  updateSetting(
+                    "direct_input_fallback",
+                    value as DirectInputFallback,
+                  )
+                }
+                disabled={isUpdating("direct_input_fallback")}
+              />
+            </label>
+          )}
           {selectedMethod === "external_script" && (
             <Input
               type="text"

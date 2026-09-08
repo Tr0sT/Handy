@@ -158,87 +158,69 @@ fn try_send_key_combo_linux(paste_method: &PasteMethod) -> Result<bool, String> 
     Ok(false)
 }
 
-/// Attempts to type text directly using Linux-native tools.
-/// Returns `Ok(true)` if a native tool handled it, `Ok(false)` to fall back to enigo.
+/// Resolve Auto before deciding whether the actual backend supports Unicode.
+/// An explicit missing tool is an error, not a silently substituted backend.
 #[cfg(target_os = "linux")]
-fn try_direct_typing_linux(text: &str, preferred_tool: TypingTool) -> Result<bool, String> {
-    // If user specified a tool, try only that one
-    if preferred_tool != TypingTool::Auto {
-        return match preferred_tool {
-            TypingTool::Wtype if is_wtype_available() => {
-                info!("Using user-specified wtype");
-                type_text_via_wtype(text)?;
-                Ok(true)
-            }
-            TypingTool::Kwtype if is_kwtype_available() => {
-                info!("Using user-specified kwtype");
-                type_text_via_kwtype(text)?;
-                Ok(true)
-            }
-            TypingTool::Dotool if is_dotool_available() => {
-                info!("Using user-specified dotool");
-                type_text_via_dotool(text)?;
-                Ok(true)
-            }
-            TypingTool::Ydotool if is_ydotool_available() => {
-                info!("Using user-specified ydotool");
-                type_text_via_ydotool(text)?;
-                Ok(true)
-            }
-            TypingTool::Xdotool if is_xdotool_available() => {
-                info!("Using user-specified xdotool");
-                type_text_via_xdotool(text)?;
-                Ok(true)
-            }
-            _ => Err(format!(
-                "Typing tool {:?} is not available on this system",
-                preferred_tool
-            )),
+fn select_typing_tool(
+    preferred: TypingTool,
+    wayland: bool,
+    kde: bool,
+    gnome: bool,
+    available: impl Fn(TypingTool) -> bool,
+) -> Result<Option<TypingTool>, String> {
+    if preferred != TypingTool::Auto {
+        return if available(preferred) {
+            Ok(Some(preferred))
+        } else {
+            Err(format!(
+                "Typing tool {preferred:?} is not available on this system"
+            ))
         };
     }
-
-    // Auto mode - existing fallback chain
-    if is_wayland() {
-        // KDE Wayland: prefer kwtype (uses KDE Fake Input protocol, supports umlauts)
-        if is_kde_wayland() && is_kwtype_available() {
-            info!("Using kwtype for direct text input on KDE Wayland");
-            type_text_via_kwtype(text)?;
-            return Ok(true);
+    let mut candidates = Vec::new();
+    if wayland {
+        if kde {
+            candidates.push(TypingTool::Kwtype);
         }
-        // Wayland: prefer wtype, then dotool, then ydotool
-        // Note: wtype doesn't work on KDE (no zwp_virtual_keyboard_manager_v1 support)
-        // or on GNOME/Mutter (same reason — Mutter deliberately does not implement
-        // the virtual-keyboard-v1 protocol).
-        if !is_kde_wayland() && !is_gnome_wayland() && is_wtype_available() {
-            info!("Using wtype for direct text input");
-            type_text_via_wtype(text)?;
-            return Ok(true);
+        if !kde && !gnome {
+            candidates.push(TypingTool::Wtype);
         }
-        if is_dotool_available() {
-            info!("Using dotool for direct text input");
-            type_text_via_dotool(text)?;
-            return Ok(true);
-        }
-        if is_ydotool_available() {
-            info!("Using ydotool for direct text input");
-            type_text_via_ydotool(text)?;
-            return Ok(true);
-        }
+        candidates.extend([TypingTool::Dotool, TypingTool::Ydotool]);
     } else {
-        // X11: prefer xdotool, then ydotool
-        if is_xdotool_available() {
-            info!("Using xdotool for direct text input");
-            type_text_via_xdotool(text)?;
-            return Ok(true);
-        }
-        if is_ydotool_available() {
-            info!("Using ydotool for direct text input");
-            type_text_via_ydotool(text)?;
-            return Ok(true);
-        }
+        candidates.extend([TypingTool::Xdotool, TypingTool::Ydotool]);
     }
+    Ok(candidates.into_iter().find(|tool| available(*tool)))
+}
 
-    Ok(false)
+#[cfg(target_os = "linux")]
+fn resolve_typing_tool(preferred: TypingTool) -> Result<Option<TypingTool>, String> {
+    select_typing_tool(
+        preferred,
+        is_wayland(),
+        is_kde_wayland(),
+        is_gnome_wayland(),
+        |tool| match tool {
+            TypingTool::Wtype => is_wtype_available(),
+            TypingTool::Kwtype => is_kwtype_available(),
+            TypingTool::Dotool => is_dotool_available(),
+            TypingTool::Ydotool => is_ydotool_available(),
+            TypingTool::Xdotool => is_xdotool_available(),
+            TypingTool::Auto => false,
+        },
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn try_direct_typing_linux(text: &str, tool: Option<TypingTool>) -> Result<bool, String> {
+    match tool {
+        Some(TypingTool::Wtype) => type_text_via_wtype(text)?,
+        Some(TypingTool::Kwtype) => type_text_via_kwtype(text)?,
+        Some(TypingTool::Dotool) => type_text_via_dotool(text)?,
+        Some(TypingTool::Ydotool) => type_text_via_ydotool(text)?,
+        Some(TypingTool::Xdotool) => type_text_via_xdotool(text)?,
+        Some(TypingTool::Auto) | None => return Ok(false),
+    }
+    Ok(true)
 }
 
 /// Returns the list of available typing tools on this system.
@@ -711,7 +693,7 @@ fn paste_via_external_script(text: &str, script_path: &str) -> Result<(), String
 fn paste_direct(
     text: &str,
     app_handle: &AppHandle,
-    #[cfg(target_os = "linux")] typing_tool: TypingTool,
+    #[cfg(target_os = "linux")] typing_tool: Option<TypingTool>,
 ) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
@@ -805,17 +787,23 @@ pub fn paste(text: String, app_handle: AppHandle) -> Result<(), String> {
         }
         PasteMethod::Direct => {
             #[cfg(target_os = "linux")]
-            if direct_typing_needs_clipboard_fallback(&text, settings.typing_tool) {
-                info!("Direct text input contains non-ASCII text; using clipboard paste fallback");
-                paste_via_clipboard(
-                    &text,
-                    &app_handle,
-                    &PasteMethod::CtrlV,
-                    paste_delay_ms,
-                    paste_delay_after_ms,
-                )?;
-            } else {
-                paste_direct(&text, &app_handle, settings.typing_tool)?;
+            {
+                let tool = resolve_typing_tool(settings.typing_tool)?;
+                if direct_typing_needs_clipboard_fallback(&text, tool.unwrap_or(TypingTool::Auto)) {
+                    let fallback = settings.direct_input_fallback.paste_method()
+                        .ok_or("The selected Direct input backend cannot type Unicode and clipboard fallback is disabled")?;
+                    info!("Direct input backend {tool:?} requires Unicode clipboard fallback {fallback:?}");
+                    paste_via_clipboard(
+                        &text,
+                        &app_handle,
+                        &fallback,
+                        paste_delay_ms,
+                        paste_delay_after_ms,
+                    )?;
+                } else {
+                    // Pass the resolved tool, never rerun Auto after the capability check.
+                    paste_direct(&text, &app_handle, tool)?;
+                }
             }
 
             #[cfg(not(target_os = "linux"))]
@@ -1077,6 +1065,54 @@ e.g. 28:1 28:0 means pressing on the Enter button on a standard US keyboard.
         assert!(direct_typing_needs_clipboard_fallback(
             "Раз, два, три.",
             TypingTool::Xdotool
+        ));
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod backend_selection_tests {
+    use super::*;
+    #[test]
+    fn auto_uses_unicode_aware_wayland_backend_before_fallback() {
+        for (kde, expected) in [(true, TypingTool::Kwtype), (false, TypingTool::Wtype)] {
+            let tool = select_typing_tool(TypingTool::Auto, true, kde, false, |_| true)
+                .unwrap()
+                .unwrap();
+            assert_eq!(tool, expected);
+            assert!(!direct_typing_needs_clipboard_fallback("Привет 👋", tool));
+        }
+    }
+    #[test]
+    fn gnome_skips_unsupported_virtual_keyboard_and_uses_configured_chord() {
+        let tool = select_typing_tool(TypingTool::Auto, true, false, true, |_| true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(tool, TypingTool::Dotool);
+        assert!(direct_typing_needs_clipboard_fallback("Привет", tool));
+        assert_eq!(
+            crate::settings::DirectInputFallback::CtrlShiftV.paste_method(),
+            Some(PasteMethod::CtrlShiftV)
+        );
+        assert_eq!(
+            crate::settings::DirectInputFallback::ShiftInsert.paste_method(),
+            Some(PasteMethod::ShiftInsert)
+        );
+    }
+    #[test]
+    fn explicit_unavailable_tool_is_not_silently_replaced() {
+        assert!(select_typing_tool(TypingTool::Wtype, true, false, false, |_| false).is_err());
+    }
+    #[test]
+    fn no_native_tool_still_requires_unicode_fallback() {
+        let tool = select_typing_tool(TypingTool::Auto, false, false, false, |_| false).unwrap();
+        assert_eq!(tool, None);
+        assert!(direct_typing_needs_clipboard_fallback(
+            "Привет",
+            tool.unwrap_or(TypingTool::Auto)
+        ));
+        assert!(!direct_typing_needs_clipboard_fallback(
+            "hello",
+            tool.unwrap_or(TypingTool::Auto)
         ));
     }
 }

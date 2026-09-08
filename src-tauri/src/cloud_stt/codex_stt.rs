@@ -11,6 +11,10 @@
 use super::codex_auth::CodexAuthManager;
 use log::{debug, info};
 use std::io::Cursor;
+use std::sync::Arc;
+use std::time::Duration;
+
+const TRANSCRIPTION_TIMEOUT: Duration = Duration::from_secs(30);
 use uuid::Uuid;
 
 /// Encode f32 PCM samples (16kHz mono) to WAV bytes using hound.
@@ -96,147 +100,121 @@ struct TranscribeResponse {
     text: String,
 }
 
-/// Build the HTTP client for Codex/ChatGPT transcription requests.
-fn build_http_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {}", e))
+/// Limit error text by Unicode scalar values, never by a byte offset.
+fn error_preview(text: &str) -> String {
+    text.chars().take(500).collect()
 }
 
-/// Send a POST to /transcribe with the given body and auth headers.
 async fn do_transcribe_request(
+    client: &reqwest::Client,
     url: &str,
     body: Vec<u8>,
     boundary: &str,
     token: &str,
     account_id: Option<&str>,
 ) -> Result<reqwest::Response, String> {
-    let client = build_http_client()?;
-    let auth_headers = CodexAuthManager::build_auth_headers(token, account_id);
-
     let mut request = client
         .post(url)
         .header(
             "Content-Type",
-            format!("multipart/form-data; boundary={}", boundary),
+            format!("multipart/form-data; boundary={boundary}"),
         )
         .body(body);
-
-    for (key, value) in &auth_headers {
-        request = request.header(key.as_str(), value.as_str());
+    for (key, value) in CodexAuthManager::build_auth_headers(token, account_id) {
+        request = request.header(key, value);
     }
-
     request
         .send()
         .await
-        .map_err(|e| format!("Transcription request failed: {}", e))
+        .map_err(|e| format!("Transcription request failed: {e}"))
 }
 
-/// Transcribe audio samples using the Codex/ChatGPT Whisper endpoint.
-///
-/// Matches the full Mhe.handleRequest pipeline from Codex Desktop:
-///   1. Encode audio to WAV
-///   2. Build multipart body (zxn/Hxn equivalent)
-///   3. Apply auth headers (applyDesktopAuthHeaders equivalent)
-///   4. POST to /transcribe
-///   5. On 401, refresh token and retry (Mhe.handleRequest retry logic)
-///   6. Return response.body.text.trim()
+/// Batch transcription with a deadline covering credentials, upload, response
+/// body and the single 401 retry. Live dictation and History Retry share it.
 pub async fn transcribe_samples(
-    auth: &CodexAuthManager,
+    auth: &Arc<CodexAuthManager>,
     samples: &[f32],
     language: Option<&str>,
 ) -> Result<String, String> {
-    let sample_rate = 16000u32;
-
-    // Encode to WAV (matches getUserMedia → MediaRecorder pipeline)
-    let wav_data = encode_wav(samples, sample_rate)?;
-    debug!(
-        "[codex_stt] Encoded {} samples to {} byte WAV",
-        samples.len(),
-        wav_data.len()
-    );
-
-    // Build multipart body matching Codex Desktop's $xn/Hxn/zxn functions
-    // Boundary format: "----codex-transcribe-{crypto.randomUUID()}"
-    let boundary = format!("----codex-transcribe-{}", Uuid::new_v4());
-    // Filename: Uxn(opts.filename ?? `codex.${ext}`) — strips quotes
-    let filename = "codex.wav";
-    let content_type = "audio/wav";
-
-    let body = build_multipart_body(&wav_data, &boundary, filename, content_type, language);
-
-    // URL: ensureAbsoluteUrl("/transcribe") → apiBaseUrl + "/transcribe"
     let url = format!("{}/transcribe", CodexAuthManager::api_base_url());
-    info!(
-        "[codex_stt] POST {} (boundary={}, size={})",
-        url,
-        boundary,
+    transcribe_with_deadline(auth, samples, language, &url, TRANSCRIPTION_TIMEOUT).await
+}
+
+async fn transcribe_with_deadline(
+    auth: &Arc<CodexAuthManager>,
+    samples: &[f32],
+    language: Option<&str>,
+    url: &str,
+    timeout: Duration,
+) -> Result<String, String> {
+    tokio::time::timeout(timeout, transcribe_at(auth, samples, language, url))
+        .await.map_err(|_| format!(
+            "Codex transcription timed out after {} seconds. The recording can be retried from History.",
+            timeout.as_secs()
+        ))?
+}
+
+async fn transcribe_at(
+    auth: &Arc<CodexAuthManager>,
+    samples: &[f32],
+    language: Option<&str>,
+    url: &str,
+) -> Result<String, String> {
+    if samples.is_empty() {
+        return Ok(String::new());
+    }
+    let wav_data = encode_wav(samples, 16_000)?;
+    let boundary = format!("----codex-transcribe-{}", Uuid::new_v4());
+    let body = build_multipart_body(&wav_data, &boundary, "codex.wav", "audio/wav", language);
+    debug!(
+        "[codex_stt] Encoded {} samples ({} bytes)",
+        samples.len(),
         body.len()
     );
-
-    // Get valid token (auto-refreshes if expired, matches getAuthToken flow)
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(TRANSCRIPTION_TIMEOUT)
+        .build()
+        .map_err(|e| format!("Failed to build transcription client: {e}"))?;
     let (token, account_id) = auth.get_valid_token().await?;
-
-    let resp =
-        do_transcribe_request(&url, body.clone(), &boundary, &token, account_id.as_deref()).await?;
-
-    // 401 retry with token refresh (matches Mhe.handleRequest):
-    //   let p = await l(d);
-    //   if (c && p.status === 401) {
-    //     d = await getAuthToken({refreshToken: true});
-    //     p = await l(d);
-    //   }
-    if resp.status().as_u16() == 401 {
-        info!("[codex_stt] Got 401, refreshing token and retrying...");
-
-        // Re-read credentials file (another process may have refreshed)
-        auth.reload_from_file();
-        let (new_token, new_account_id) = auth.get_valid_token().await?;
-
-        let retry_resp =
-            do_transcribe_request(&url, body, &boundary, &new_token, new_account_id.as_deref())
+    let mut response = do_transcribe_request(
+        &client,
+        url,
+        body.clone(),
+        &boundary,
+        &token,
+        account_id.as_deref(),
+    )
+    .await?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        // Do not merely re-read auth.json: an unexpired JWT can be rejected.
+        // Manual credentials must never switch to a file-backed account here.
+        drop(response);
+        let (token, account_id) = auth.refresh_after_rejection(&token).await?;
+        response =
+            do_transcribe_request(&client, url, body, &boundary, &token, account_id.as_deref())
                 .await?;
-
-        if !retry_resp.status().is_success() {
-            let status = retry_resp.status();
-            let text = retry_resp.text().await.unwrap_or_default();
-            return Err(format!(
-                "Transcription failed after retry: HTTP {} — {}",
-                status,
-                &text[..text.len().min(500)]
-            ));
-        }
-
-        let result: TranscribeResponse = retry_resp
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse transcription response: {}", e))?;
-
-        // zxn does: (await zxn(blob)).trim()
-        return Ok(result.text.trim().to_string());
     }
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
         return Err(format!(
-            "Transcription failed: HTTP {} — {}",
-            status,
-            &text[..text.len().min(500)]
+            "Transcription failed: HTTP {status} — {}",
+            error_preview(&body)
         ));
     }
-
-    let result: TranscribeResponse = resp
+    let result: TranscribeResponse = response
         .json()
         .await
-        .map_err(|e| format!("Failed to parse transcription response: {}", e))?;
-
-    let transcript = result.text.trim().to_string();
+        .map_err(|e| format!("Failed to parse transcription response: {e}"))?;
+    let transcript = result.text.trim().to_owned();
+    // Never log speech content at info level, not even a truncated preview.
     info!(
-        "[codex_stt] Transcription complete: '{}' ({} chars)",
-        &transcript[..transcript.len().min(100)],
-        transcript.len()
+        "[codex_stt] Transcription complete ({} characters)",
+        transcript.chars().count()
     );
-
     Ok(transcript)
 }
+
+#[cfg(test)]
+mod tests;

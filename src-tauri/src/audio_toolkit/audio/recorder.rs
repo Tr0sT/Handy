@@ -622,7 +622,7 @@ mod tests {
     use std::{
         sync::{
             atomic::{AtomicBool, Ordering},
-            mpsc, Arc,
+            mpsc, Arc, Mutex,
         },
         thread,
         time::{Duration, Instant},
@@ -657,6 +657,7 @@ mod tests {
                 cmd_rx,
                 None,
                 None,
+                Arc::new(Mutex::new(None)),
                 Arc::new(AtomicBool::new(false)),
                 Instant::now(),
             );
