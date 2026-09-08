@@ -18,52 +18,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: fix/cloud-transcription-reliability
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
-      - name: Apply hash-verified source edits on the PR branch
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/reliability-results
-          cp .github/review-edits.*.b64 /tmp/reliability-results/
-          git checkout -B fix/cloud-transcription-reliability origin/fix/cloud-transcription-reliability
-          test "$(git rev-parse HEAD)" = 0094ba09b0282f39cbabef4ea7de5b0f1387758f
-          python3 - <<'PY'
-          import base64, gzip, hashlib, json
-          from pathlib import Path
-          parts = [Path(f'/tmp/reliability-results/review-edits.{i}.b64').read_text().strip() for i in range(1,5)]
-          # Correct transport transcription only; the decoded payload and every
-          # source file must match the independently recorded SHA-256 hashes.
-          parts[1] = parts[1].replace('ZEdhz+eV3Ort1', 'ZEdhz+V3Ort1')
-          marker = 'O69+P71mwP'
-          if parts[2].count(marker) == 2:
-              first = parts[2].index(marker) + len(marker)
-              last = parts[2].rindex(marker) + len(marker)
-              parts[2] = parts[2][:first] + parts[2][last:]
-          parts[3] = parts[3].replace('uYuAuAFw83', 'uYuAFw83')
-          print('Payload part lengths:', [len(p) for p in parts], flush=True)
-          raw = gzip.decompress(base64.b64decode(''.join(parts), validate=True))
-          digest = hashlib.sha256(raw).hexdigest()
-          assert digest == 'b730a6bfa886918538dbaee96b396698c024b80549733c12d0bce31f18016212', digest
-          for edit in json.loads(raw):
-              path = Path(edit['path'])
-              assert not path.is_absolute() and '..' not in path.parts
-              assert path.exists() == edit['exists'], str(path)
-              before = path.read_text() if path.exists() else ''
-              assert hashlib.sha256(before.encode()).hexdigest() == edit['before'], str(path)
-              lines = before.splitlines(keepends=True)
-              for start, end, replacement in reversed(edit['ops']):
-                  lines[start:end] = [replacement]
-              after = ''.join(lines)
-              assert hashlib.sha256(after.encode()).hexdigest() == edit['after'], str(path)
-              path.parent.mkdir(parents=True, exist_ok=True)
-              path.write_text(after)
-          print('Verified and applied all source edits')
-          PY
-          git diff --check
       - name: Install native build prerequisites
         run: |
           set -euo pipefail
+          mkdir -p /tmp/reliability-results
           sudo apt-get update -qq
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev libopenblas-dev libx11-dev libxtst-dev libxrandr-dev libgtk-layer-shell-dev libvulkan-dev glslc spirv-headers glslang-tools xvfb
           mkdir -p src-tauri/resources/models
@@ -73,44 +34,35 @@ jobs:
           echo 'ORT_LIB_LOCATION=/tmp/onnxruntime-linux-x86_64-1.24.2/lib' >> "$GITHUB_ENV"
           echo 'ORT_PREFER_DYNAMIC_LINK=1' >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=/tmp/onnxruntime-linux-x86_64-1.24.2/lib:$PWD/src-tauri/target/debug" >> "$GITHUB_ENV"
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: cache
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             src-tauri/target
-          key: handy-regressions-cpu-v1-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
-      - name: Format and publish candidate without touching main
-        shell: bash
-        run: |
-          set -euo pipefail
-          bun install --frozen-lockfile
-          bunx prettier --write src/App.tsx src/components/settings/PasteMethod.tsx src/stores/settingsStore.ts src/i18n/locales/*/translation.json
-          cargo fmt --manifest-path src-tauri/Cargo.toml
-          git diff --check
-          git config user.name 'Handy reliability review'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src src-tauri
-          git commit -m 'fix: preserve dictation and isolate cloud authentication lifecycle'
-          git push origin HEAD:refs/heads/fix/cloud-transcription-reliability
-          git rev-parse HEAD > /tmp/reliability-results/candidate-sha.txt
-      - name: Frontend checks
-        shell: bash
-        run: |
-          set -euo pipefail
-          { bun run build; bun run lint; bun run check:translations; bun run check:model-languages; bun run format:check; } 2>&1 | tee /tmp/reliability-results/frontend.log
+          key: handy-regressions-cpu-v2-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: handy-regressions-cpu-v2-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}-
+      - name: Vite assets required by the Tauri compile
+        run: bun install --frozen-lockfile && bunx vite build
       - name: Regenerate and verify real Tauri bindings
         shell: bash
         run: |
           set -euo pipefail
           HANDY_UPDATE_BINDINGS=1 cargo test --manifest-path src-tauri/Cargo.toml --locked --lib generated_typescript_bindings_are_current 2>&1 | tee /tmp/reliability-results/bindings.log
           if ! git diff --quiet -- src/bindings.ts; then
+            git config user.name 'Handy reliability review'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
             git add src/bindings.ts
             git commit -m 'chore: regenerate IPC bindings from the shared command registry'
             git push origin HEAD:refs/heads/fix/cloud-transcription-reliability
           fi
           git rev-parse HEAD > /tmp/reliability-results/candidate-sha.txt
-          bun run build
+      - name: Frontend checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          { bun run build; bun run lint; bun run check:translations; bun run check:model-languages; bun run format:check; } 2>&1 | tee /tmp/reliability-results/frontend.log
       - name: Native regression tests and lint
         shell: bash
         run: |
@@ -118,6 +70,14 @@ jobs:
           cargo check --manifest-path src-tauri/Cargo.toml --locked --tests 2>&1 | tee /tmp/reliability-results/check.log
           cargo clippy --manifest-path src-tauri/Cargo.toml --locked --tests 2>&1 | tee /tmp/reliability-results/clippy.log
           xvfb-run -a cargo test --manifest-path src-tauri/Cargo.toml --locked --lib 2>&1 | tee /tmp/reliability-results/tests.log
+      - uses: actions/cache/save@v4
+        if: always() && steps.cache.outcome == 'success'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: handy-regressions-cpu-v2-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}-${{ github.run_id }}
       - name: Export candidate source and diagnostics
         if: always()
         run: |
