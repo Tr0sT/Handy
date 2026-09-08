@@ -319,6 +319,7 @@
         }
       },
       "pasteMethod": {
+        "unicodeFallback": "Wklejanie ze schowka dla Unicode",
         "title": "Metoda wklejania",
         "description": "Wybierz sposób wstawiania tekstu. Direct: symuluje wpisywanie. None: pomija wklejanie, tylko aktualizuje historię/clipboard.",
         "options": {

@@ -319,6 +319,7 @@
         }
       },
       "pasteMethod": {
+        "unicodeFallback": "Alternativa da área de transferência para Unicode",
         "title": "Método de Colar",
         "description": "Escolha como o texto é inserido. Direto: simula digitação via entrada do sistema. Nenhum: ignora colar, apenas atualiza histórico/área de transferência.",
         "options": {

@@ -319,6 +319,7 @@
         }
       },
       "pasteMethod": {
+        "unicodeFallback": "Zwischenablage-Ersatz für Unicode",
         "title": "Einfügemethode",
         "description": "Wähle, wie Text eingefügt wird. Direkt: simuliert Tippen über Systemeingabe. Keine: überspringt Einfügen, aktualisiert nur Verlauf/Zwischenablage.",
         "options": {

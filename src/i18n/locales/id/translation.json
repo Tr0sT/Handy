@@ -329,7 +329,8 @@
           "none": "Tidak Ada",
           "externalScript": "Skrip Eksternal"
         },
-        "externalScriptPlaceholder": "/path/to/your/script.sh"
+        "externalScriptPlaceholder": "/path/to/your/script.sh",
+        "unicodeFallback": "Metode papan klip cadangan untuk Unicode"
       },
       "typingTool": {
         "title": "Alat Pengetikan",

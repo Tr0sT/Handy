@@ -319,6 +319,7 @@
         }
       },
       "pasteMethod": {
+        "unicodeFallback": "Alternativa del portapapeles para Unicode",
         "title": "Método de pegado",
         "description": "Elige cómo se inserta el texto. Directo: simula escritura mediante entrada del sistema. Ninguno: omite el pegado, solo actualiza historial/portapapeles.",
         "options": {

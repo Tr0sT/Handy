@@ -65,6 +65,18 @@ pub struct HistoryEntry {
     pub post_process_requested: bool,
 }
 
+/// UUIDs prevent rapid recordings/retries from overwriting a WAV in the same second.
+fn save_recording_audio(directory: &std::path::Path, samples: &[f32]) -> Result<String> {
+    if samples.is_empty() {
+        return Err(anyhow!("Recording has no audio samples"));
+    }
+    let file_name = format!("handy-{}.wav", uuid::Uuid::new_v4());
+    let path = directory.join(&file_name);
+    crate::audio_toolkit::save_wav_file(&path, samples)?;
+    crate::audio_toolkit::verify_wav_file(&path, samples.len())?;
+    Ok(file_name)
+}
+
 pub struct HistoryManager {
     app_handle: AppHandle,
     recordings_dir: PathBuf,
@@ -212,6 +224,21 @@ impl HistoryManager {
 
     pub fn recordings_dir(&self) -> &std::path::Path {
         &self.recordings_dir
+    }
+
+    /// Persist verified audio before any network work. The caller publishes a
+    /// History entry for every outcome after the request settles, so unfinished
+    /// recordings are not misleadingly displayed as failed/retryable in the UI.
+    pub async fn save_recording(
+        self: &std::sync::Arc<Self>,
+        samples: Vec<f32>,
+    ) -> Result<String, String> {
+        let manager = std::sync::Arc::clone(self);
+        tauri::async_runtime::spawn_blocking(move || {
+            save_recording_audio(manager.recordings_dir(), &samples).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| format!("Recording persistence task failed: {e}"))?
     }
 
     /// Save a new history entry to the database.
@@ -733,5 +760,32 @@ mod tests {
 
         assert_eq!(entry.timestamp, 100);
         assert_eq!(entry.transcription_text, "completed");
+    }
+}
+
+#[cfg(test)]
+mod recording_persistence_tests {
+    use super::*;
+    #[test]
+    fn successive_recordings_have_distinct_verified_audio() {
+        let dir = tempfile::tempdir().unwrap();
+        let samples = vec![0.125; 1600];
+        let first = save_recording_audio(dir.path(), &samples).unwrap();
+        let second = save_recording_audio(dir.path(), &samples).unwrap();
+        assert_ne!(first, second);
+        for file in [first, second] {
+            assert_eq!(
+                crate::audio_toolkit::read_wav_samples(&dir.path().join(file))
+                    .unwrap()
+                    .len(),
+                samples.len()
+            );
+        }
+    }
+    #[test]
+    fn empty_recording_is_not_persisted() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(save_recording_audio(dir.path(), &[]).is_err());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 }

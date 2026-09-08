@@ -577,6 +577,10 @@
     url = "https://registry.npmjs.org/@tauri-apps/plugin-global-shortcut/-/plugin-global-shortcut-2.3.2.tgz";
     hash = "sha512-UReHNXrLvpEjylE4jb4oCYiy96uRykPUthoCQCmRXYrd5hs5X9DrW+qOn7GLW57EJN4tdK8bgK5twBTz2NOxzA==";
   };
+  "@tauri-apps/plugin-notification@2.3.3" = fetchurl {
+    url = "https://registry.npmjs.org/@tauri-apps/plugin-notification/-/plugin-notification-2.3.3.tgz";
+    hash = "sha512-Zw+ZH18RJb41G4NrfHgIuofJiymusqN+q8fGUIIV7vyCH+5sSn5coqRv/MWB9qETsUs97vmU045q7OyseCV3Qg==";
+  };
   "@tauri-apps/plugin-opener@2.5.2" = fetchurl {
     url = "https://registry.npmjs.org/@tauri-apps/plugin-opener/-/plugin-opener-2.5.2.tgz";
     hash = "sha512-ei/yRRoCklWHImwpCcDK3VhNXx+QXM9793aQ64YxpqVF0BDuuIlXhZgiAkc15wnPVav+IbkYhmDJIv5R326Mew==";

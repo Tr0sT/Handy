@@ -319,6 +319,7 @@
         }
       },
       "pasteMethod": {
+        "unicodeFallback": "Unicode 剪貼簿備用輸入",
         "title": "貼上方式",
         "description": "選擇文字插入方式。直接：透過系統輸入模擬打字。無：跳過貼上，僅更新歷史紀錄/剪貼簿",
         "options": {
