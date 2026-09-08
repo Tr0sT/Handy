@@ -1,0 +1,61 @@
+name: Targeted Handy review proofs
+on:
+  push:
+    branches: [work/upstream-rebase-2026-09-08]
+    paths: [.github/workflows/review-proofs.yml]
+permissions:
+  contents: read
+jobs:
+  proofs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ff0d495bb5e2e2cbe3a8d8cdce8dda074d3fb6a7
+          persist-credentials: false
+      - name: Extract pure helper tests and reproduce UTF-8 panics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          def function(source, name):
+              start = source.index('fn ' + name + '(')
+              opening = source.index('{', start)
+              depth = 1
+              end = opening + 1
+              while depth:
+                  depth += (source[end] == '{') - (source[end] == '}')
+                  end += 1
+              return source[start:end]
+          clipboard = Path('src-tauri/src/clipboard.rs').read_text()
+          stt = Path('src-tauri/src/cloud_stt/codex_stt.rs').read_text()
+          auth = Path('src-tauri/src/cloud_stt/codex_auth.rs').read_text()
+          assert '&transcript[..transcript.len().min(100)]' in stt
+          assert '&text[..text.len().min(500)]' in stt
+          assert '&text[..text.len().min(500)]' in auth
+          code = '#![allow(dead_code)]\n#[derive(Clone, Copy)]\nenum TypingTool { Auto, Wtype, Kwtype, Dotool, Ydotool, Xdotool }\n'
+          code += function(clipboard, 'direct_typing_needs_clipboard_fallback') + '\n'
+          for name in ('direct_typing_keeps_ascii_on_direct_path', 'direct_typing_falls_back_for_unicode_with_auto_tool', 'direct_typing_allows_unicode_for_text_aware_wayland_tools', 'direct_typing_falls_back_for_unicode_with_keycode_tools'):
+              code += '#[test]\n' + function(clipboard, name) + '\n'
+          code += '''
+          #[test]
+          fn confirms_successful_transcript_can_panic_in_log_preview() {
+              let transcript = format!("a{}", "я".repeat(60));
+              assert!(std::panic::catch_unwind(|| {
+                  let _ = &transcript[..transcript.len().min(100)];
+              }).is_err());
+          }
+          #[test]
+          fn confirms_unicode_error_preview_can_panic() {
+              let text = format!("a{}", "я".repeat(300));
+              assert!(std::panic::catch_unwind(|| {
+                  let _ = &text[..text.len().min(500)];
+              }).is_err());
+          }
+          '''
+          Path('/tmp/handy-review-proofs.rs').write_text(code)
+          PY
+          rustc --edition 2021 --test /tmp/handy-review-proofs.rs -o /tmp/handy-review-proofs
+          /tmp/handy-review-proofs --nocapture
