@@ -35,9 +35,13 @@ jobs:
       TRANSCRIBE_CMAKE_ARGS: "-DTRANSCRIBE_VULKAN=OFF -DGGML_CPU_ALL_VARIANTS=OFF"
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
       - name: Install Linux build prerequisites
         run: |
+          set -euo pipefail
+          mkdir -p /tmp/handy-regressions
           sudo apt-get update -qq
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev libopenblas-dev libx11-dev libxtst-dev libxrandr-dev libgtk-layer-shell-dev libvulkan-dev glslc spirv-headers glslang-tools xvfb
           mkdir -p src-tauri/resources/models
@@ -53,18 +57,26 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             src-tauri/target
-          key: handy-regressions-cpu-v1-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          key: handy-regressions-cpu-v2-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: handy-regressions-cpu-v2-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}-
       - name: Frontend build and checks
         run: |
+          set -euo pipefail
           bun install --frozen-lockfile
-          bun run build
-          bun run lint
-          bun run check:translations
-          bun run check:model-languages
-          bun run format:check
+          { bun run build; bun run lint; bun run check:translations; bun run check:model-languages; bun run format:check; } 2>&1 | tee /tmp/handy-regressions/frontend.log
       - name: Rust compilation and lint checks
         run: |
-          cargo check --manifest-path src-tauri/Cargo.toml --locked --tests
-          cargo clippy --manifest-path src-tauri/Cargo.toml --locked --tests
+          set -euo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml --locked --tests 2>&1 | tee /tmp/handy-regressions/check.log
+          cargo clippy --manifest-path src-tauri/Cargo.toml --locked --tests 2>&1 | tee /tmp/handy-regressions/clippy.log
       - name: Native Rust regression suite
-        run: xvfb-run -a cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
+        run: |
+          set -euo pipefail
+          xvfb-run -a cargo test --manifest-path src-tauri/Cargo.toml --locked --lib 2>&1 | tee /tmp/handy-regressions/tests.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fork-regression-results
+          path: /tmp/handy-regressions/
+          if-no-files-found: ignore
+          retention-days: 7
