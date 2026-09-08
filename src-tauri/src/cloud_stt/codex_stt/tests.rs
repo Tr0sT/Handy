@@ -144,11 +144,18 @@ async fn deadline_bounds_a_stalled_http_response() {
     let mut server = MockServer::start().await;
     let auth = manual_auth();
     let url = server.url.clone();
+    // Client initialization shares CPU with the entire parallel test suite.
+    // Allow it to reach the fixture before testing a genuinely stalled response.
     let result = tokio::spawn(async move {
-        transcribe_with_deadline(&auth, &[0.1; 100], None, &url, Duration::from_millis(100)).await
+        transcribe_with_deadline(&auth, &[0.1; 100], None, &url, Duration::from_secs(2)).await
     });
     let _request_without_response = server.next().await;
-    assert!(result.await.unwrap().unwrap_err().contains("timed out"));
+    let error = tokio::time::timeout(Duration::from_secs(5), result)
+        .await
+        .expect("the transcription deadline must terminate a stalled response")
+        .unwrap()
+        .unwrap_err();
+    assert!(error.contains("timed out"));
 }
 
 #[tokio::test]
