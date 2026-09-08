@@ -39,7 +39,7 @@ struct FinishGuard(AppHandle);
 impl Drop for FinishGuard {
     fn drop(&mut self) {
         utils::hide_recording_overlay(&self.0);
-        change_tray_icon(&self.0, TrayIconState::Idle);
+        set_tray_state(&self.0, TrayIconState::Idle);
         if let Some(c) = self.0.try_state::<TranscriptionCoordinator>() {
             c.notify_processing_finished();
         }
@@ -475,16 +475,7 @@ pub(crate) async fn process_transcription_output(
 }
 
 impl ShortcutAction for TranscribeAction {
-    fn start(&self, app: &AppHandle, binding_id: &str, shortcut_str: &str) {
-        let settings = get_settings(app);
-        if selected_model_engine(app, &settings) == Some(EngineType::CloudCodex) {
-            let action = CloudCodexTranscribeAction {
-                post_process: self.post_process,
-            };
-            action.start(app, binding_id, shortcut_str);
-            return;
-        }
-
+    fn start(&self, app: &AppHandle, binding_id: &str, _shortcut_str: &str) {
         let start_time = Instant::now();
         debug!("TranscribeAction::start called for binding: {}", binding_id);
 
@@ -923,65 +914,14 @@ struct CloudCodexTranscribeAction {
 }
 
 impl ShortcutAction for CloudCodexTranscribeAction {
-    fn start(&self, app: &AppHandle, binding_id: &str, _shortcut_str: &str) {
-        debug!(
-            "CloudCodexTranscribeAction::start called for binding: {}",
-            binding_id
-        );
-
-        change_tray_icon(app, TrayIconState::Recording);
-        show_recording_overlay(app);
-
-        let rm = app.state::<Arc<AudioRecordingManager>>();
-        let settings = get_settings(app);
-        let is_always_on = settings.always_on_microphone;
-        let vad_policy = if settings.vad_enabled {
-            VadPolicy::Offline
-        } else {
-            VadPolicy::Disabled
-        };
-
-        let binding_id = binding_id.to_string();
-        let mut recording_error: Option<String> = None;
-
-        // Codex is batch — just start recording, no cloud connection yet
-        if is_always_on {
-            let rm_clone = Arc::clone(&rm);
-            let app_clone = app.clone();
-            std::thread::spawn(move || {
-                play_feedback_sound_blocking(&app_clone, SoundType::Start);
-                rm_clone.apply_mute();
-            });
-
-            if let Err(e) = rm.try_start_recording(&binding_id, vad_policy) {
-                recording_error = Some(e);
-            }
-        } else {
-            match rm.try_start_recording(&binding_id, vad_policy) {
-                Ok(()) => {
-                    let app_clone = app.clone();
-                    let rm_clone = Arc::clone(&rm);
-                    std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                        play_feedback_sound_blocking(&app_clone, SoundType::Start);
-                        rm_clone.apply_mute();
-                    });
-                }
-                Err(e) => {
-                    recording_error = Some(e);
-                }
-            }
+    fn start(&self, app: &AppHandle, binding_id: &str, shortcut_str: &str) {
+        // Share the upstream readiness, VAD, feedback and error-handling path.
+        // TranscribeAction::start also supports the virtual CloudCodex model;
+        // only its stop path dispatches to the cloud-specific HTTP pipeline.
+        TranscribeAction {
+            post_process: self.post_process,
         }
-
-        if recording_error.is_none() {
-            shortcut::register_cancel_shortcut(app);
-        } else {
-            utils::hide_recording_overlay(app);
-            change_tray_icon(app, TrayIconState::Idle);
-            if let Some(err) = recording_error {
-                let _ = app.emit("recording-error", err);
-            }
-        }
+        .start(app, binding_id, shortcut_str);
     }
 
     fn stop(&self, app: &AppHandle, binding_id: &str, _shortcut_str: &str) {
@@ -991,7 +931,7 @@ impl ShortcutAction for CloudCodexTranscribeAction {
         let rm = Arc::clone(&app.state::<Arc<AudioRecordingManager>>());
         let hm = Arc::clone(&app.state::<Arc<HistoryManager>>());
 
-        change_tray_icon(app, TrayIconState::Transcribing);
+        set_tray_state(app, TrayIconState::Transcribing);
         show_transcribing_overlay(app);
 
         rm.remove_mute();
@@ -1058,14 +998,14 @@ async fn finalize_cloud_transcript(
 ) {
     if transcript.is_empty() {
         utils::hide_recording_overlay(ah);
-        change_tray_icon(ah, TrayIconState::Idle);
+        set_tray_state(ah, TrayIconState::Idle);
         return;
     }
 
     if rm.was_cancelled_since(cancel_generation) {
         debug!("Cloud transcription operation cancelled before output handling");
         utils::hide_recording_overlay(ah);
-        change_tray_icon(ah, TrayIconState::Idle);
+        set_tray_state(ah, TrayIconState::Idle);
         return;
     }
 
@@ -1103,7 +1043,7 @@ async fn finalize_cloud_transcript(
     if rm.was_cancelled_since(cancel_generation) {
         debug!("Cloud transcription operation cancelled before history save");
         utils::hide_recording_overlay(ah);
-        change_tray_icon(ah, TrayIconState::Idle);
+        set_tray_state(ah, TrayIconState::Idle);
         return;
     }
 
@@ -1153,7 +1093,7 @@ async fn finalize_cloud_transcript(
     if rm.was_cancelled_since(cancel_generation) {
         debug!("Cloud transcription operation cancelled before paste");
         utils::hide_recording_overlay(ah);
-        change_tray_icon(ah, TrayIconState::Idle);
+        set_tray_state(ah, TrayIconState::Idle);
         return;
     }
 
@@ -1165,7 +1105,7 @@ async fn finalize_cloud_transcript(
         if rm_for_paste.was_cancelled_since(cancel_generation) {
             debug!("Cloud transcription operation cancelled before paste");
             utils::hide_recording_overlay(&ah_clone);
-            change_tray_icon(&ah_clone, TrayIconState::Idle);
+            set_tray_state(&ah_clone, TrayIconState::Idle);
             return;
         }
 
@@ -1174,12 +1114,12 @@ async fn finalize_cloud_transcript(
             Err(e) => error!("Failed to paste transcription: {}", e),
         }
         utils::hide_recording_overlay(&ah_clone);
-        change_tray_icon(&ah_clone, TrayIconState::Idle);
+        set_tray_state(&ah_clone, TrayIconState::Idle);
     })
     .unwrap_or_else(|e| {
         error!("Failed to run paste on main thread: {:?}", e);
         utils::hide_recording_overlay(&ah_clone2);
-        change_tray_icon(&ah_clone2, TrayIconState::Idle);
+        set_tray_state(&ah_clone2, TrayIconState::Idle);
     });
 }
 
