@@ -319,6 +319,7 @@
         }
       },
       "pasteMethod": {
+        "unicodeFallback": "Repli sur le presse-papiers pour Unicode",
         "title": "Méthode de collage",
         "description": "Choisissez comment le texte est inséré. Direct : simule la frappe via l'entrée système. Aucun : ignore le collage, met uniquement à jour l'historique/presse-papiers.",
         "options": {

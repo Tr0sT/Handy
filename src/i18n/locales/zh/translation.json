@@ -319,6 +319,7 @@
         }
       },
       "pasteMethod": {
+        "unicodeFallback": "Unicode 剪贴板备用输入",
         "title": "粘贴方式",
         "description": "选择文字插入方式。直接：通过系统输入模拟打字。无：跳过粘贴，仅更新历史记录/剪贴板。",
         "options": {

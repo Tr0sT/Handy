@@ -1220,6 +1220,67 @@ impl TranscriptionManager {
         .emit(&self.app_handle);
     }
 
+    /// Provider-aware entry point shared by live dictation, History Retry and
+    /// the headless CLI. Only live dictation may finalize an active stream.
+    /// The explicit model id also preserves the CLI's non-persisted --model.
+    pub async fn transcribe_audio<C>(
+        self: &Arc<Self>,
+        audio: Vec<f32>,
+        model_id: &str,
+        finish_stream: bool,
+        is_cancelled: C,
+    ) -> Result<Option<String>, String>
+    where
+        C: Fn() -> bool,
+    {
+        let model = self
+            .model_manager
+            .get_model_info(model_id)
+            .ok_or_else(|| format!("Model not found: {model_id}"))?;
+        let settings = get_settings(&self.app_handle);
+        let language =
+            effective_language_for_model(&settings, self.model_manager.as_ref(), model_id);
+        // Futures are lazy: only the selected provider gets polled. There is no
+        // download/engine requirement for a cloud model and no HTTP for local STT.
+        let samples = Arc::new(audio);
+        let local_samples = Arc::clone(&samples);
+        let manager = Arc::clone(self);
+        crate::transcription_pipeline::run_provider(
+            model.engine_type == EngineType::CloudCodex,
+            async move {
+                tauri::async_runtime::spawn_blocking(move || {
+                    let stream = if finish_stream {
+                        manager.finalize_stream()?
+                    } else {
+                        None
+                    };
+                    if let Some(text) = stream.filter(|text| !text.trim().is_empty()) {
+                        return Ok(text);
+                    }
+                    manager.transcribe(Arc::unwrap_or_clone(local_samples))
+                })
+                .await
+                .map_err(|e| format!("Transcription task failed: {e}"))?
+                .map_err(|e: anyhow::Error| e.to_string())
+            },
+            async {
+                let language = if language == "auto" {
+                    None
+                } else {
+                    Some(language.as_str())
+                };
+                crate::commands::cloud_stt::codex_transcribe_samples(
+                    &self.app_handle,
+                    &samples,
+                    language,
+                )
+                .await
+            },
+            is_cancelled,
+        )
+        .await
+    }
+
     pub fn transcribe(&self, audio: Vec<f32>) -> Result<String> {
         #[cfg(debug_assertions)]
         if std::env::var("HANDY_FORCE_TRANSCRIPTION_FAILURE").is_ok() {

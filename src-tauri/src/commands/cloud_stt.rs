@@ -5,13 +5,7 @@ use crate::cloud_stt::claude_session::CloudSttSession;
 use crate::cloud_stt::codex_auth::{CodexAuthManager, CodexAuthState};
 use log::{debug, info};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use tauri::{AppHandle, Manager};
-
-/// A healthy Codex transcription normally completes within a few seconds.
-/// Bound the entire operation (including token refresh and a possible retry)
-/// so a stalled network request cannot leave Handy in the transcribing state.
-const CODEX_TRANSCRIPTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ---------------------------------------------------------------------------
 // Managed state
@@ -81,8 +75,7 @@ pub fn get_codex_auth_state(app: AppHandle) -> Result<CodexAuthState, String> {
 #[specta::specta]
 pub fn set_codex_access_token(app: AppHandle, token: String) -> Result<(), String> {
     let manager = app.state::<Arc<CodexAuthManager>>();
-    manager.set_access_token(token);
-    Ok(())
+    manager.set_access_token(token)
 }
 
 #[tauri::command]
@@ -245,15 +238,5 @@ pub async fn codex_transcribe_samples(
     language: Option<&str>,
 ) -> Result<String, String> {
     let auth = app.state::<Arc<CodexAuthManager>>();
-    tokio::time::timeout(
-        CODEX_TRANSCRIPTION_TIMEOUT,
-        crate::cloud_stt::codex_stt::transcribe_samples(&auth, samples, language),
-    )
-    .await
-    .map_err(|_| {
-        format!(
-            "Codex transcription timed out after {} seconds. Check your network connection and try again.",
-            CODEX_TRANSCRIPTION_TIMEOUT.as_secs()
-        )
-    })?
+    crate::cloud_stt::codex_stt::transcribe_samples(&auth, samples, language).await
 }

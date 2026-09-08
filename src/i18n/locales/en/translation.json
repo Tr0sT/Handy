@@ -319,6 +319,7 @@
         }
       },
       "pasteMethod": {
+        "unicodeFallback": "Clipboard fallback for Unicode",
         "title": "Paste Method",
         "description": "Choose how text is inserted. Direct: simulates typing via system input. None: skips paste, only updates history/clipboard.",
         "options": {

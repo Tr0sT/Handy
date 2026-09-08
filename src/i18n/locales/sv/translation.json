@@ -319,6 +319,7 @@
         }
       },
       "pasteMethod": {
+        "unicodeFallback": "Urklippsalternativ för Unicode",
         "title": "Klistra-in-metod",
         "description": "Välj hur text infogas. Direkt: simulerar skrivande via systeminmatning. Ingen: hoppar över klistra in, uppdaterar endast historik/urklipp.",
         "options": {

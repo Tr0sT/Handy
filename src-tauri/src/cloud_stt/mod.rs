@@ -22,3 +22,6 @@ pub struct CloudSttStatusEvent {
     pub status: String,
     pub message: Option<String>,
 }
+
+#[cfg(test)]
+mod test_support;

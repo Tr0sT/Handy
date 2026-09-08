@@ -173,6 +173,14 @@ async changePasteMethodSetting(method: string) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async changeDirectInputFallbackSetting(fallback: DirectInputFallback) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_direct_input_fallback_setting", { fallback }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getAvailableTypingTools() : Promise<string[]> {
     return await TAURI_INVOKE("get_available_typing_tools");
 },
@@ -1178,6 +1186,7 @@ export type OverlayPosition = "top" | "bottom"
  */
 export type OverlayStyle = "none" | "minimal" | "live"
 export type PaginatedHistory = { entries: HistoryEntry[]; has_more: boolean }
+export type DirectInputFallback = "ctrl_v" | "ctrl_shift_v" | "shift_insert" | "none"
 export type PasteMethod = "ctrl_v" | "direct" | "none" | "shift_insert" | "ctrl_shift_v" | "external_script"
 export type PermissionAccess = "allowed" | "denied" | "unknown"
 export type PostProcessProvider = { id: string; label: string; base_url: string; allow_base_url_edit?: boolean; models_endpoint?: string | null; supports_structured_output?: boolean }

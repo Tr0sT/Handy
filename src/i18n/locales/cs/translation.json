@@ -319,6 +319,7 @@
         }
       },
       "pasteMethod": {
+        "unicodeFallback": "Náhradní vložení ze schránky pro Unicode",
         "title": "Způsob vložení",
         "description": "Vyberte, jak se text vkládá. Přímé: simuluje psaní přes systémový vstup. Žádné: přeskočí vložení a aktualizuje pouze historii/schránku.",
         "options": {

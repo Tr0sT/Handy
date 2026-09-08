@@ -1,55 +1,37 @@
-//! Authentication for Codex Desktop / ChatGPT transcription endpoint.
-//!
-//! Reads tokens from `~/.codex/auth.json` (same file Codex Desktop uses).
-//! Supports auto-refresh via OAuth2 refresh_token flow against auth.openai.com.
-//!
-//! Architecture matches Codex Desktop's Mhe.handleRequest:
-//!   1. Load access_token from auth.json
-//!   2. Check JWT expiry (with 5-minute margin)
-//!   3. If expired, refresh via auth.openai.com/oauth/token
-//!   4. On 401 during transcription, caller retries with refresh
+//! Codex credentials are either an explicitly supplied access token or a file
+//! import. Never fall back from one source/account to the other implicitly.
 
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::fs::{File, OpenOptions, TryLockError};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-// Constants from Codex Desktop source (main.js / index-MmO6ZWIv.js)
 const PROD_API_BASE: &str = "https://chatgpt.com/backend-api";
 const AUTH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const ORIGINATOR: &str = "Codex Desktop";
 const APP_VERSION: &str = "1.0.4";
-/// JWT expiry margin in seconds (refresh if expiring within 5 minutes).
 const EXPIRY_MARGIN_SECS: u64 = 300;
+const REFRESH_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Codex auth state exposed to the frontend.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct CodexAuthState {
     pub is_logged_in: bool,
     pub has_auth_file: bool,
 }
 
-impl Default for CodexAuthState {
-    fn default() -> Self {
-        Self {
-            is_logged_in: false,
-            has_auth_file: auth_file_path().map(|p| p.exists()).unwrap_or(false),
-        }
-    }
-}
-
-/// JSON structure of ~/.codex/auth.json
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 struct CodexAuthFile {
     tokens: CodexTokens,
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize)]
 struct CodexTokens {
     access_token: String,
     #[serde(default)]
@@ -60,8 +42,7 @@ struct CodexTokens {
     extra: serde_json::Map<String, serde_json::Value>,
 }
 
-/// OAuth2 token refresh response from auth.openai.com/oauth/token
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct RefreshResponse {
     access_token: String,
     #[serde(default)]
@@ -70,295 +51,444 @@ struct RefreshResponse {
     refresh_token: Option<String>,
 }
 
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
+#[derive(Clone, PartialEq, Eq)]
+enum CredentialSource {
+    Manual,
+    CodexFile(PathBuf),
+}
+
+// Deliberately no Debug: these types contain bearer/refresh credentials.
+#[derive(Clone)]
+struct Credentials {
+    access_token: String,
+    account_id: Option<String>,
+    source: CredentialSource,
+}
+
+#[derive(Default)]
+struct CodexAuthInner {
+    // Changes only on explicit import, manual input or logout, not on rotation.
+    revision: u64,
+    credentials: Option<Credentials>,
+}
+
+pub struct CodexAuthManager {
+    state: Mutex<CodexAuthInner>,
+    refresh_gate: tokio::sync::Mutex<()>,
+    file_path: Option<PathBuf>,
+    refresh_url: String,
+    client: reqwest::Client,
 }
 
 fn auth_file_path() -> Option<PathBuf> {
-    home_dir().map(|h| h.join(".codex").join("auth.json"))
+    if let Some(home) = std::env::var_os("CODEX_HOME").filter(|p| !p.is_empty()) {
+        return Some(PathBuf::from(home).join("auth.json"));
+    }
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(|home| PathBuf::from(home).join(".codex/auth.json"))
 }
 
-/// Decode the payload of a JWT (no signature verification).
 fn decode_jwt_payload(token: &str) -> Option<serde_json::Value> {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
-
-    let parts: Vec<&str> = token.split('.').collect();
-    if parts.len() < 2 {
-        return None;
-    }
-    // JWT base64url may need padding
-    let payload = parts[1];
-    let padded = match payload.len() % 4 {
-        2 => format!("{}==", payload),
-        3 => format!("{}=", payload),
-        _ => payload.to_string(),
-    };
-    let bytes = URL_SAFE_NO_PAD.decode(padded.trim_end_matches('=')).ok()?;
+    let payload = token.split('.').nth(1)?;
+    let bytes = URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
-/// Extract chatgpt_account_id from JWT payload.
-/// Matches: token.split(".")[1] → base64url decode →
-///   ["https://api.openai.com/auth"]["chatgpt_account_id"]
 fn extract_chatgpt_account_id(token: &str) -> Option<String> {
-    let claims = decode_jwt_payload(token)?;
-    claims
+    decode_jwt_payload(token)?
         .get("https://api.openai.com/auth")?
         .get("chatgpt_account_id")?
         .as_str()
-        .map(|s| s.to_string())
+        .map(str::to_owned)
 }
 
-/// Check if a JWT is expired (with margin). Returns true if expired or unparseable.
 fn is_token_expired(token: &str) -> bool {
-    match decode_jwt_payload(token) {
-        Some(claims) => {
-            let exp = claims.get("exp").and_then(|v| v.as_u64()).unwrap_or(0);
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            now > exp.saturating_sub(EXPIRY_MARGIN_SECS)
-        }
-        None => true,
-    }
+    let exp = decode_jwt_payload(token)
+        .and_then(|claims| claims.get("exp").and_then(serde_json::Value::as_u64))
+        .unwrap_or(0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    now >= exp.saturating_sub(EXPIRY_MARGIN_SECS)
 }
 
-/// Build the User-Agent string matching Codex Desktop's buildDesktopUserAgent().
 fn build_user_agent() -> String {
-    let platform = if cfg!(target_os = "linux") {
-        "linux"
-    } else if cfg!(target_os = "macos") {
+    let platform = if cfg!(target_os = "macos") {
         "darwin"
     } else if cfg!(target_os = "windows") {
         "win32"
     } else {
-        "unknown"
+        "linux"
     };
-    let arch = if cfg!(target_arch = "x86_64") {
-        "x64"
-    } else if cfg!(target_arch = "aarch64") {
+    let arch = if cfg!(target_arch = "aarch64") {
         "arm64"
+    } else if cfg!(target_arch = "x86_64") {
+        "x64"
     } else {
         "unknown"
     };
-    format!("Codex Desktop/{} ({}; {})", APP_VERSION, platform, arch)
+    format!("Codex Desktop/{APP_VERSION} ({platform}; {arch})")
 }
 
-/// Refresh the access token using the refresh_token.
-/// Matches Codex Desktop's OAuth2 refresh flow via auth.openai.com/oauth/token.
-///
-/// Uses reqwest (not rquest) since auth.openai.com doesn't have the same
-/// Cloudflare bot protection as chatgpt.com.
-async fn refresh_access_token(refresh_token: &str) -> Result<RefreshResponse, String> {
-    let client = reqwest::Client::new();
-    let body = serde_json::json!({
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token,
-        "client_id": CLIENT_ID,
-    });
-
-    let resp = client
-        .post(AUTH_TOKEN_URL)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Token refresh request failed: {}", e))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!(
-            "Token refresh failed: HTTP {} — {}",
-            status,
-            &text[..text.len().min(500)]
-        ));
+fn read_auth_file(path: &Path) -> Result<(String, CodexAuthFile), String> {
+    let contents = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read Codex credentials: {e}"))?;
+    let file: CodexAuthFile = serde_json::from_str(&contents)
+        .map_err(|e| format!("Failed to parse Codex credentials: {e}"))?;
+    if file.tokens.access_token.trim().is_empty() {
+        return Err("Codex credentials contain an empty access token".into());
     }
-
-    resp.json::<RefreshResponse>()
-        .await
-        .map_err(|e| format!("Failed to parse refresh response: {}", e))
+    Ok((contents, file))
 }
 
-/// Manager for Codex/ChatGPT authentication.
-pub struct CodexAuthManager {
-    state: Arc<Mutex<CodexAuthInner>>,
+fn file_credentials(file: &CodexAuthFile, path: &Path) -> Credentials {
+    Credentials {
+        access_token: file.tokens.access_token.clone(),
+        account_id: extract_chatgpt_account_id(&file.tokens.access_token).or_else(|| {
+            file.tokens
+                .extra
+                .get("account_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+        }),
+        source: CredentialSource::CodexFile(path.to_owned()),
+    }
 }
 
-struct CodexAuthInner {
-    access_token: Option<String>,
-    account_id: Option<String>,
+fn require_same_account(expected: &Credentials, actual: &Credentials) -> Result<(), String> {
+    if expected.account_id != actual.account_id {
+        return Err(
+            "Codex account changed. Import credentials again to confirm the new account.".into(),
+        );
+    }
+    // The account claim can be absent on some tokens. Still reject a changed
+    // user subject rather than adopting another user's file silently.
+    let subject = |token: &str| {
+        decode_jwt_payload(token)
+            .and_then(|v| v.get("sub").and_then(|s| s.as_str()).map(str::to_owned))
+    };
+    if subject(&expected.access_token) != subject(&actual.access_token) {
+        return Err("Codex user changed. Import credentials again to confirm the new user.".into());
+    }
+    Ok(())
+}
+
+/// A sidecar lock survives atomic replacement of auth.json. It coordinates
+/// Handy instances; non-cooperating writers (e.g. Codex) are detected by the
+/// content comparison before replacement. Do not delete the sidecar on unlock.
+async fn lock_auth_file(path: &Path) -> Result<File, String> {
+    let lock_path = path.with_file_name("auth.json.handy.lock");
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(lock_path)
+        .map_err(|e| format!("Failed to open credential lock: {e}"))?;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(file),
+                Err(TryLockError::WouldBlock) => {
+                    tokio::time::sleep(Duration::from_millis(25)).await
+                }
+                Err(TryLockError::Error(e)) => {
+                    return Err(format!("Failed to lock credentials: {e}"))
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|_| "Timed out waiting for Codex credential refresh".to_string())?
+}
+
+fn write_auth_file_atomically(path: &Path, file: &CodexAuthFile) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or("Codex credential directory is missing")?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|e| format!("Failed to create credential update: {e}"))?;
+    // NamedTempFile creates Unix files with mode 0600. Keep that restrictive
+    // mode rather than copying potentially over-broad permissions from input.
+    serde_json::to_writer_pretty(&mut temp, file)
+        .map_err(|e| format!("Failed to serialize credentials: {e}"))?;
+    temp.write_all(b"\n")
+        .and_then(|_| temp.as_file().sync_all())
+        .map_err(|e| format!("Failed to flush credentials: {e}"))?;
+    temp.persist(path)
+        .map_err(|e| format!("Failed to replace credentials: {}", e.error))?;
+    #[cfg(unix)]
+    File::open(parent)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| format!("Failed to sync credential directory: {e}"))?;
+    Ok(())
 }
 
 impl CodexAuthManager {
     pub fn new() -> Self {
+        Self::with_config(auth_file_path(), AUTH_TOKEN_URL.to_owned())
+    }
+
+    fn with_config(file_path: Option<PathBuf>, refresh_url: String) -> Self {
         let manager = Self {
-            state: Arc::new(Mutex::new(CodexAuthInner {
-                access_token: None,
-                account_id: None,
-            })),
+            state: Mutex::new(CodexAuthInner::default()),
+            refresh_gate: tokio::sync::Mutex::new(()),
+            file_path,
+            refresh_url,
+            client: reqwest::Client::new(),
         };
-        // Try to load on creation
         manager.reload_from_file();
         manager
     }
 
-    /// Read tokens from ~/.codex/auth.json. Returns true if a token was loaded.
+    #[cfg(test)]
+    pub(crate) fn test_config(file_path: Option<PathBuf>, refresh_url: String) -> Self {
+        Self::with_config(file_path, refresh_url)
+    }
+
+    fn lock_state(&self) -> MutexGuard<'_, CodexAuthInner> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     pub fn reload_from_file(&self) -> bool {
-        let path = match auth_file_path() {
-            Some(p) if p.exists() => p,
-            _ => {
-                debug!("[codex_auth] No auth file found");
-                return false;
+        let loaded = self
+            .file_path
+            .as_ref()
+            .and_then(|path| match read_auth_file(path) {
+                Ok((_, file)) => Some(file_credentials(&file, path)),
+                Err(e) => {
+                    debug!("[codex_auth] {e}");
+                    None
+                }
+            });
+        let mut state = self.lock_state();
+        if let Some(credentials) = loaded {
+            state.revision = state.revision.wrapping_add(1);
+            state.credentials = Some(credentials);
+            info!("[codex_auth] Imported file credentials");
+            true
+        } else {
+            // A failed import must not leave an old file session looking valid.
+            // Nor should it discard a manually entered credential.
+            if state
+                .credentials
+                .as_ref()
+                .is_some_and(|c| matches!(c.source, CredentialSource::CodexFile(_)))
+            {
+                state.revision = state.revision.wrapping_add(1);
+                state.credentials = None;
             }
-        };
-
-        let contents = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(e) => {
-                warn!("[codex_auth] Failed to read auth file: {}", e);
-                return false;
-            }
-        };
-
-        let auth_file: CodexAuthFile = match serde_json::from_str(&contents) {
-            Ok(f) => f,
-            Err(e) => {
-                warn!("[codex_auth] Failed to parse auth file: {}", e);
-                return false;
-            }
-        };
-
-        let token = &auth_file.tokens.access_token;
-        if token.is_empty() {
-            debug!("[codex_auth] Auth file has empty access_token");
-            return false;
+            false
         }
-
-        let account_id = extract_chatgpt_account_id(token);
-        let mut inner = self.state.lock().unwrap();
-        inner.access_token = Some(token.clone());
-        inner.account_id = account_id;
-        info!("[codex_auth] Loaded token from ~/.codex/auth.json");
-        true
     }
 
     pub fn get_state(&self) -> CodexAuthState {
-        let inner = self.state.lock().unwrap();
         CodexAuthState {
-            is_logged_in: inner.access_token.is_some(),
-            has_auth_file: auth_file_path().map(|p| p.exists()).unwrap_or(false),
+            is_logged_in: self.lock_state().credentials.is_some(),
+            has_auth_file: self.file_path.as_ref().is_some_and(|p| p.is_file()),
         }
     }
 
-    pub fn is_logged_in(&self) -> bool {
-        self.state.lock().unwrap().access_token.is_some()
-    }
-
-    /// Set the access token manually (in-memory only, does not write to auth.json).
-    pub fn set_access_token(&self, token: String) {
-        let account_id = extract_chatgpt_account_id(&token);
-        let mut inner = self.state.lock().unwrap();
-        inner.access_token = Some(token);
-        inner.account_id = account_id;
-        info!("[codex_auth] Access token set manually (in-memory only)");
+    pub fn set_access_token(&self, token: String) -> Result<(), String> {
+        let token = token.trim().to_owned();
+        if token.is_empty() {
+            return Err("Access token must not be empty".into());
+        }
+        let credentials = Credentials {
+            account_id: extract_chatgpt_account_id(&token),
+            access_token: token,
+            source: CredentialSource::Manual,
+        };
+        let mut state = self.lock_state();
+        state.revision = state.revision.wrapping_add(1);
+        state.credentials = Some(credentials);
+        Ok(())
     }
 
     pub fn logout(&self) {
-        let mut inner = self.state.lock().unwrap();
-        inner.access_token = None;
-        inner.account_id = None;
-        info!("[codex_auth] Logged out");
+        let mut state = self.lock_state();
+        state.revision = state.revision.wrapping_add(1);
+        state.credentials = None;
     }
 
-    /// Get the current access token, refreshing if expired.
-    /// This is async because token refresh requires an HTTP call.
-    pub async fn get_valid_token(&self) -> Result<(String, Option<String>), String> {
-        let (token, account_id) = {
-            let inner = self.state.lock().unwrap();
-            match &inner.access_token {
-                Some(t) => (t.clone(), inner.account_id.clone()),
-                None => return Err("Not logged in to Codex".to_string()),
-            }
+    pub async fn get_valid_token(self: &Arc<Self>) -> Result<(String, Option<String>), String> {
+        self.get_token(None).await
+    }
+
+    /// A server rejection forces rotation even when JWT exp is in the future.
+    pub async fn refresh_after_rejection(
+        self: &Arc<Self>,
+        rejected: &str,
+    ) -> Result<(String, Option<String>), String> {
+        self.get_token(Some(rejected.to_owned())).await
+    }
+
+    async fn get_token(
+        self: &Arc<Self>,
+        rejected: Option<String>,
+    ) -> Result<(String, Option<String>), String> {
+        let (revision, credentials) = {
+            let state = self.lock_state();
+            (
+                state.revision,
+                state.credentials.clone().ok_or("Not logged in to Codex")?,
+            )
         };
-
-        // Check if token needs refresh
-        if !is_token_expired(&token) {
-            return Ok((token, account_id));
+        if !is_token_expired(&credentials.access_token)
+            && rejected.as_deref() != Some(credentials.access_token.as_str())
+        {
+            return Ok((credentials.access_token, credentials.account_id));
         }
+        if credentials.source == CredentialSource::Manual {
+            return Err("The manually entered Codex token expired or was rejected. Enter a new token; file credentials will not be substituted.".into());
+        }
+        let manager = Arc::clone(self);
+        // Once refresh_token rotation starts it must finish persisting even if
+        // the user cancels transcription or its outer deadline elapses. Dropping
+        // this JoinHandle does not abort the bounded refresh task. The revision
+        // check below prevents it from undoing a logout/manual account change.
+        tokio::spawn(async move { manager.refresh_file(revision, credentials, rejected).await })
+            .await
+            .map_err(|e| format!("Credential refresh task failed: {e}"))?
+    }
 
-        info!("[codex_auth] Token expired, attempting refresh...");
-
-        // Read the refresh token from file
-        let path = auth_file_path().ok_or("No auth file path")?;
-        let contents = std::fs::read_to_string(&path)
-            .map_err(|e| format!("Failed to read auth file: {}", e))?;
-        let mut auth_file: CodexAuthFile = serde_json::from_str(&contents)
-            .map_err(|e| format!("Failed to parse auth file: {}", e))?;
-
-        let refresh_token = auth_file
+    async fn refresh_file(
+        &self,
+        revision: u64,
+        original: Credentials,
+        rejected: Option<String>,
+    ) -> Result<(String, Option<String>), String> {
+        let _gate = self.refresh_gate.lock().await;
+        {
+            let state = self.lock_state();
+            if state.revision != revision {
+                return Err("Codex login changed during refresh; try again".into());
+            }
+            if let Some(c) = &state.credentials {
+                if !is_token_expired(&c.access_token)
+                    && rejected.as_deref() != Some(c.access_token.as_str())
+                {
+                    return Ok((c.access_token.clone(), c.account_id.clone()));
+                }
+            }
+        }
+        let CredentialSource::CodexFile(path) = &original.source else {
+            return Err("Manual tokens cannot be refreshed from a file".into());
+        };
+        let _file_lock = lock_auth_file(path).await?;
+        let (before, mut file) = read_auth_file(path)?;
+        let current = file_credentials(&file, path);
+        require_same_account(&original, &current)?;
+        if !is_token_expired(&current.access_token)
+            && rejected.as_deref() != Some(current.access_token.as_str())
+        {
+            return self.install_refreshed(revision, current);
+        }
+        let refresh_token = file
             .tokens
             .refresh_token
-            .as_ref()
-            .ok_or("No refresh_token in auth file")?
-            .clone();
-
-        let refreshed = refresh_access_token(&refresh_token).await?;
-
-        // Update auth.json (matches what Codex Desktop does)
-        auth_file.tokens.access_token = refreshed.access_token.clone();
-        if let Some(id_token) = &refreshed.id_token {
-            auth_file.tokens.id_token = Some(id_token.clone());
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .ok_or("No refresh token in Codex credentials; sign in again")?;
+        let response = self.client.post(&self.refresh_url)
+            .timeout(REFRESH_TIMEOUT)
+            .json(&serde_json::json!({"grant_type": "refresh_token", "refresh_token": refresh_token, "client_id": CLIENT_ID}))
+            .send().await.map_err(|e| format!("Token refresh request failed: {e}"))?;
+        if !response.status().is_success() {
+            // Auth responses may echo secrets. Do not send their raw bodies to
+            // logs or UI, even on failure.
+            return Err(format!(
+                "Token refresh failed: HTTP {}. Sign in to Codex again.",
+                response.status()
+            ));
         }
-        if let Some(rt) = &refreshed.refresh_token {
-            auth_file.tokens.refresh_token = Some(rt.clone());
+        let refreshed: RefreshResponse = response
+            .json()
+            .await
+            .map_err(|e| format!("Invalid token refresh response: {e}"))?;
+        if is_token_expired(&refreshed.access_token) {
+            return Err("Token refresh returned an empty, invalid or expired token".into());
         }
+        file.tokens.access_token = refreshed.access_token;
+        if let Some(token) = refreshed.id_token {
+            file.tokens.id_token = Some(token);
+        }
+        if let Some(token) = refreshed.refresh_token {
+            file.tokens.refresh_token = Some(token);
+        }
+        let credentials = file_credentials(&file, path);
+        require_same_account(&original, &credentials)?;
 
-        let updated_json = serde_json::to_string_pretty(&auth_file)
-            .map_err(|e| format!("Failed to serialize auth file: {}", e))?;
-        std::fs::write(&path, format!("{}\n", updated_json))
-            .map_err(|e| format!("Failed to write auth file: {}", e))?;
-
-        let new_account_id = extract_chatgpt_account_id(&refreshed.access_token);
-
-        // Update in-memory state
-        let mut inner = self.state.lock().unwrap();
-        inner.access_token = Some(refreshed.access_token.clone());
-        inner.account_id = new_account_id.clone();
-
-        info!("[codex_auth] Token refreshed successfully");
-        Ok((refreshed.access_token, new_account_id))
+        let (after, latest_file) = read_auth_file(path)?;
+        if before != after {
+            // Another program doesn't use our sidecar lock. Never overwrite its
+            // new account, rotated refresh token, or unrelated JSON fields.
+            let latest = file_credentials(&latest_file, path);
+            require_same_account(&original, &latest)?;
+            if !is_token_expired(&latest.access_token)
+                && rejected.as_deref() != Some(latest.access_token.as_str())
+            {
+                return self.install_refreshed(revision, latest);
+            }
+            warn!("[codex_auth] Credentials changed externally during refresh; not overwriting");
+            return Err(
+                "Codex credentials changed during refresh. Import credentials again.".into(),
+            );
+        }
+        write_auth_file_atomically(path, &file)?;
+        self.install_refreshed(revision, credentials)
     }
 
-    /// Get the API base URL (matches Mhe.resolveApiBaseUrl).
+    fn install_refreshed(
+        &self,
+        revision: u64,
+        credentials: Credentials,
+    ) -> Result<(String, Option<String>), String> {
+        let mut state = self.lock_state();
+        if state.revision != revision {
+            return Err("Codex login changed during refresh; try again".into());
+        }
+        let result = (
+            credentials.access_token.clone(),
+            credentials.account_id.clone(),
+        );
+        state.credentials = Some(credentials);
+        Ok(result)
+    }
+
     pub fn api_base_url() -> String {
         if let Ok(url) = std::env::var("CODEX_API_BASE_URL") {
-            let trimmed = url.trim_end_matches('/').to_string();
-            if !trimmed.is_empty() {
-                return trimmed;
+            if !url.trim_end_matches('/').is_empty() {
+                return url.trim_end_matches('/').to_owned();
             }
         }
-        if let Ok(endpoint) = std::env::var("CODEX_API_ENDPOINT") {
-            if endpoint.to_lowercase() == "localhost" {
-                return "http://localhost:8000/api".to_string();
-            }
+        if std::env::var("CODEX_API_ENDPOINT").is_ok_and(|v| v.eq_ignore_ascii_case("localhost")) {
+            return "http://localhost:8000/api".into();
         }
-        PROD_API_BASE.to_string()
+        PROD_API_BASE.into()
     }
 
-    /// Build auth headers matching applyDesktopAuthHeaders().
     pub fn build_auth_headers(token: &str, account_id: Option<&str>) -> Vec<(String, String)> {
         let mut headers = vec![
-            ("Authorization".to_string(), format!("Bearer {}", token)),
-            ("originator".to_string(), ORIGINATOR.to_string()),
-            ("User-Agent".to_string(), build_user_agent()),
+            ("Authorization".into(), format!("Bearer {token}")),
+            ("originator".into(), ORIGINATOR.into()),
+            ("User-Agent".into(), build_user_agent()),
         ];
-        if let Some(aid) = account_id {
-            headers.push(("ChatGPT-Account-Id".to_string(), aid.to_string()));
+        if let Some(account_id) = account_id {
+            headers.push(("ChatGPT-Account-Id".into(), account_id.into()));
         }
         headers
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -657,6 +657,7 @@ mod tests {
                 cmd_rx,
                 None,
                 None,
+                Arc::new(Mutex::new(None)),
                 Arc::new(AtomicBool::new(false)),
                 Instant::now(),
             );
