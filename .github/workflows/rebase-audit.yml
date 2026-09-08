@@ -4,38 +4,95 @@ on:
     branches: [work/upstream-rebase-2026-09-08]
     paths: [.github/workflows/rebase-audit.yml]
 permissions:
-  contents: read
+  contents: write
 jobs:
   audit:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 25
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: false
-      - name: Export history and inspect rebase
+      - uses: oven-sh/setup-bun@v2
+      - name: Reproduce reviewed rebase
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'Handy rebase audit'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          cp .github/rebase-audit.py /tmp/rebase-audit.py
           git remote add upstream https://github.com/cjpais/Handy.git
           git fetch --no-tags upstream main
           test "$(git rev-parse upstream/main)" = bc7facea3a777869182203cfcf5c90f7a98efd99
-          mkdir -p /tmp/handy-audit
-          git bundle create /tmp/handy-audit/history.bundle --all
-          git checkout --detach ec96125738d24b0eb3057bbc5797549999016792
-          if git rebase --onto bc7facea3a777869182203cfcf5c90f7a98efd99 37a26fd6ab905259d66affea57fff448288ca1aa; then
-            git log --oneline -3 | tee /tmp/handy-audit/rebase-result.txt
-            git bundle create /tmp/handy-audit/rebased.bundle HEAD --all
-          else
-            git status --short | tee /tmp/handy-audit/rebase-result.txt
-            git diff > /tmp/handy-audit/conflicts.diff
-            cat /tmp/handy-audit/conflicts.diff
-          fi
+          python3 /tmp/rebase-audit.py
+      - name: Install and format changed files
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bunx prettier --write src/App.tsx src/components/onboarding/ModelCard.tsx src/components/settings/models/ModelsSettings.tsx src/lib/constants/languages.ts
+          cargo fmt --manifest-path src-tauri/Cargo.toml
+          git diff --check
+          git add -u
+          git commit -m 'fix: share upstream microphone readiness with Codex transcription'
+          git merge-base --is-ancestor bc7facea3a777869182203cfcf5c90f7a98efd99 HEAD
+          test "$(git rev-list --count bc7facea3a777869182203cfcf5c90f7a98efd99..HEAD)" = 3
+          git push origin HEAD:refs/heads/review/rebased-2026-09-08
+          git log -3 --format='%H %s'
+      - name: Frontend build
+        id: frontend
+        continue-on-error: true
+        run: bun run build
+      - name: ESLint
+        id: lint
+        continue-on-error: true
+        run: bun run lint
+      - name: Translation and language checks
+        id: languages
+        continue-on-error: true
+        run: bun run check:translations && bun run check:model-languages
+      - name: Formatting check
+        id: formatting
+        continue-on-error: true
+        run: bun run format:check
+      - name: Native build prerequisites
+        id: prerequisites
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev libopenblas-dev libx11-dev libxtst-dev libxrandr-dev libgtk-layer-shell-dev libvulkan-dev glslc
+          mkdir -p src-tauri/resources/models
+          curl -fL --retry 2 -o src-tauri/resources/models/silero_vad_v4.onnx https://blob.handy.computer/silero_vad_v4.onnx
+          curl -fL --retry 2 -o /tmp/ort.tgz https://blob.handy.computer/onnxruntime-linux-x86_64-1.24.2.tgz
+          tar -xzf /tmp/ort.tgz -C /tmp
+          echo 'ORT_LIB_LOCATION=/tmp/onnxruntime-linux-x86_64-1.24.2/lib' >> "$GITHUB_ENV"
+          echo 'ORT_PREFER_DYNAMIC_LINK=1' >> "$GITHUB_ENV"
+      - name: Rust compile check including tests
+        id: rust
+        if: steps.prerequisites.outcome == 'success'
+        continue-on-error: true
+        run: cargo check --manifest-path src-tauri/Cargo.toml --locked --tests
+      - name: Export validated history and results
+        if: always()
+        run: |
+          mkdir -p /tmp/handy-validated
+          git bundle create /tmp/handy-validated/history.bundle HEAD --all
+          git log -3 --format='%H %s' > /tmp/handy-validated/commits.txt
+          printf '%s\n' 'frontend=${{ steps.frontend.outcome }}' 'lint=${{ steps.lint.outcome }}' 'languages=${{ steps.languages.outcome }}' 'formatting=${{ steps.formatting.outcome }}' 'prerequisites=${{ steps.prerequisites.outcome }}' 'rust=${{ steps.rust.outcome }}' | tee /tmp/handy-validated/checks.txt
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: handy-rebase-audit
-          path: /tmp/handy-audit/
+          name: handy-rebase-validated
+          path: /tmp/handy-validated/
           retention-days: 3
+      - name: Require successful checks
+        if: always()
+        run: |
+          test '${{ steps.frontend.outcome }}' = success
+          test '${{ steps.lint.outcome }}' = success
+          test '${{ steps.languages.outcome }}' = success
+          test '${{ steps.formatting.outcome }}' = success
+          test '${{ steps.rust.outcome }}' = success
