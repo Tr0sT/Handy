@@ -1,0 +1,54 @@
+name: Rebased Handy native compile check
+on:
+  push:
+    branches: [work/upstream-rebase-2026-09-08]
+    paths: [.github/workflows/native-review.yml]
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ff0d495bb5e2e2cbe3a8d8cdce8dda074d3fb6a7
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+      - name: Native prerequisites, matching upstream Linux Vulkan setup
+        run: |
+          set -euo pipefail
+          curl -fsSL https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc >/dev/null
+          sudo curl -fsSL -o /etc/apt/sources.list.d/lunarg-vulkan-1.3.290-noble.list https://packages.lunarg.com/vulkan/1.3.290/lunarg-vulkan-1.3.290-noble.list
+          sudo apt-get update -qq
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev libopenblas-dev libx11-dev libxtst-dev libxrandr-dev libgtk-layer-shell-dev vulkan-sdk mesa-vulkan-drivers spirv-headers
+          mkdir -p src-tauri/resources/models
+          curl -fL --retry 2 -o src-tauri/resources/models/silero_vad_v4.onnx https://blob.handy.computer/silero_vad_v4.onnx
+          curl -fL --retry 2 -o /tmp/ort.tgz https://blob.handy.computer/onnxruntime-linux-x86_64-1.24.2.tgz
+          tar -xzf /tmp/ort.tgz -C /tmp
+          echo 'ORT_LIB_LOCATION=/tmp/onnxruntime-linux-x86_64-1.24.2/lib' >> "$GITHUB_ENV"
+          echo 'ORT_PREFER_DYNAMIC_LINK=1' >> "$GITHUB_ENV"
+      - name: Frontend assets for Tauri compile
+        run: bun install --frozen-lockfile && bun run build
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: handy-native-review-linux-ff0d495-v1
+      - name: Check Rust application and test targets
+        run: |
+          set -euo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml --locked --tests 2>&1 | tee /tmp/handy-native-check.log
+          git diff --check
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: handy-native-check-log
+          path: /tmp/handy-native-check.log
+          if-no-files-found: ignore
+          retention-days: 3
