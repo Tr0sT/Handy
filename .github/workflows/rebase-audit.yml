@@ -1,0 +1,41 @@
+name: Isolated upstream rebase audit
+on:
+  push:
+    branches: [work/upstream-rebase-2026-09-08]
+    paths: [.github/workflows/rebase-audit.yml]
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Export history and inspect rebase
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Handy rebase audit'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream https://github.com/cjpais/Handy.git
+          git fetch --no-tags upstream main
+          test "$(git rev-parse upstream/main)" = bc7facea3a777869182203cfcf5c90f7a98efd99
+          mkdir -p /tmp/handy-audit
+          git bundle create /tmp/handy-audit/history.bundle --all
+          git checkout --detach ec96125738d24b0eb3057bbc5797549999016792
+          if git rebase --onto bc7facea3a777869182203cfcf5c90f7a98efd99 37a26fd6ab905259d66affea57fff448288ca1aa; then
+            git log --oneline -3 | tee /tmp/handy-audit/rebase-result.txt
+            git bundle create /tmp/handy-audit/rebased.bundle HEAD --all
+          else
+            git status --short | tee /tmp/handy-audit/rebase-result.txt
+            git diff > /tmp/handy-audit/conflicts.diff
+            cat /tmp/handy-audit/conflicts.diff
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: handy-rebase-audit
+          path: /tmp/handy-audit/
+          retention-days: 3
