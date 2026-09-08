@@ -1,0 +1,78 @@
+name: Verify squashed fork
+on:
+  push:
+    branches: [work/verify-squashed-fork-2026-09-08]
+permissions:
+  contents: read
+jobs:
+  regression-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CMAKE_BUILD_PARALLEL_LEVEL: "2"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      TRANSCRIBE_CMAKE_ARGS: "-DTRANSCRIBE_VULKAN=OFF -DGGML_CPU_ALL_VARIANTS=OFF"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check exact source and one-commit ancestry
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/handy-regressions
+          git checkout --detach 9d4253da60b479c8bdc01b43d255b415dbd0bd09
+          test "$(git rev-parse HEAD^)" = 330b2ddbed3daab8f1fb09385cc1aaf73708e9d7
+          test "$(git rev-list --count HEAD^..HEAD)" = 1
+          test "$(git rev-parse 'HEAD^{tree}')" = db2c7aa2f5b1e4616e67b010936479b5e6b3553b
+          git diff --exit-code 16e5e6020a7049eaae049d8a568d0ff649e428bf HEAD
+          git diff --exit-code dbfd7ffd1881bc2f0e3cc4556ff9293f31e19f3d HEAD -- src src-tauri bun.lock package.json
+          git show -s --format='%H%n%T%n%P%n%s' HEAD | tee /tmp/handy-regressions/validated-commit.txt
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - name: Install Linux build prerequisites
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev libopenblas-dev libx11-dev libxtst-dev libxrandr-dev libgtk-layer-shell-dev libvulkan-dev glslc spirv-headers glslang-tools xvfb
+          mkdir -p src-tauri/resources/models
+          curl -fL --retry 2 -o src-tauri/resources/models/silero_vad_v4.onnx https://blob.handy.computer/silero_vad_v4.onnx
+          curl -fL --retry 2 -o /tmp/ort.tgz https://blob.handy.computer/onnxruntime-linux-x86_64-1.24.2.tgz
+          tar -xzf /tmp/ort.tgz -C /tmp
+          echo 'ORT_LIB_LOCATION=/tmp/onnxruntime-linux-x86_64-1.24.2/lib' >> "$GITHUB_ENV"
+          echo 'ORT_PREFER_DYNAMIC_LINK=1' >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=/tmp/onnxruntime-linux-x86_64-1.24.2/lib:$PWD/src-tauri/target/debug" >> "$GITHUB_ENV"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: handy-regressions-cpu-v2-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: handy-regressions-cpu-v2-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}-
+      - name: Frontend build and checks
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          { bun run build; bun run lint; bun run check:translations; bun run check:model-languages; bun run format:check; } 2>&1 | tee /tmp/handy-regressions/frontend.log
+          bunx bun2nix@2.1.2 -o .nix/bun.nix
+          git diff --exit-code -- .nix/bun.nix
+      - name: Rust compilation and lint checks
+        run: |
+          set -euo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml --locked --tests 2>&1 | tee /tmp/handy-regressions/check.log
+          cargo clippy --manifest-path src-tauri/Cargo.toml --locked --tests 2>&1 | tee /tmp/handy-regressions/clippy.log
+      - name: Native Rust regression suite
+        run: |
+          set -euo pipefail
+          xvfb-run -a cargo test --manifest-path src-tauri/Cargo.toml --locked --lib 2>&1 | tee /tmp/handy-regressions/tests.log
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: squashed-regression-results
+          path: /tmp/handy-regressions/
+          retention-days: 7
