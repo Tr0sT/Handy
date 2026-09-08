@@ -34,7 +34,7 @@ jobs:
           parts = [Path(f'/tmp/reliability-results/review-edits.{i}.b64').read_text().strip() for i in range(1,5)]
           # Correct transport transcription only; the decoded payload and every
           # source file must match the independently recorded SHA-256 hashes.
-          parts[1] = parts[1].replace('JEdhz+eV3Ort1', 'JEdhz+V3Ort1')
+          parts[1] = parts[1].replace('ZEdhz+eV3Ort1', 'ZEdhz+V3Ort1')
           marker = 'O69+P71mwP'
           if parts[2].count(marker) == 2:
               first = parts[2].index(marker) + len(marker)
