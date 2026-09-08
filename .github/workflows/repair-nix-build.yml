@@ -20,7 +20,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/nix-repair"
-          git checkout --detach e6ef7124b6365495438de818634fadfe05ce7f68
+          git checkout --detach 8e3354ad3a4753e651c00d3666883c18789a6738
           python3 - <<'PY'
           from pathlib import Path
           p = Path('flake.nix')
@@ -31,13 +31,10 @@ jobs:
           s = p.read_text().replace('bunx bun2nix', 'bunx bun2nix@2.1.2')
           s = s.replace('["bunx", "bun2nix",', '["bunx", "bun2nix@2.1.2",')
           p.write_text(s)
-          p = Path('.github/workflows/nix-check.yml')
-          s = p.read_text().replace('bunx bun2nix -o', 'bunx bun2nix@2.1.2 -o')
-          s = s.replace('so compilation-breaking edits are caught by flake eval.', 'to catch Nix expression errors (Rust compilation requires a full build).')
-          s = s.replace('      - "bun.lock"', '      - "bun.lock"\n      - "scripts/check-nix-deps.ts"')
-          p.write_text(s)
           PY
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
       - uses: cachix/install-nix-action@v31
       - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71
         with:
@@ -51,20 +48,21 @@ jobs:
           bunx bun2nix@2.1.2 -o .nix/bun.nix
           sha256sum bun.lock | cut -d' ' -f1 > .nix/bun-lock-hash
           bun install --frozen-lockfile
-          bunx prettier --write scripts/check-nix-deps.ts .github/workflows/nix-check.yml
+          bunx prettier --write scripts/check-nix-deps.ts
+          bunx prettier --check .github/workflows/nix-check.yml
           bun run build > "$RUNNER_TEMP/nix-repair/frontend.log" 2>&1
           bun run lint >> "$RUNNER_TEMP/nix-repair/frontend.log" 2>&1
           git diff --check
           git config user.name 'Sergey Morozov'
           git config user.email 'tr0st@bk.ru'
-          git add flake.nix flake.lock .nix/bun.nix .nix/bun-lock-hash scripts/check-nix-deps.ts .github/workflows/nix-check.yml
+          git add flake.nix flake.lock .nix/bun.nix .nix/bun-lock-hash scripts/check-nix-deps.ts
           git commit -m 'fix(nix): update bun2nix and pin the matching dependency generator'
-          git push origin HEAD:refs/heads/work/nix-updated-candidate-2026-09-08
           git rev-parse HEAD | tee "$RUNNER_TEMP/nix-repair/candidate-sha.txt"
           git rev-parse 'HEAD^{tree}' | tee "$RUNNER_TEMP/nix-repair/candidate-tree.txt"
           git branch candidate-export HEAD
           git bundle create "$RUNNER_TEMP/nix-repair/source.bundle" candidate-export
           cp flake.lock "$RUNNER_TEMP/nix-repair/flake.lock"
+          git push origin HEAD:refs/heads/work/nix-updated-candidate-2026-09-08
       - name: Evaluate both supported platforms
         run: |
           set -euo pipefail
