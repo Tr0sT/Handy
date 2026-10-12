@@ -2,7 +2,10 @@ name: October upstream sync validation
 on:
   push:
     branches: [work/sync-validation-2026-10-12]
-    paths: [.github/workflows/sync-validation.yml]
+    paths:
+      - .github/workflows/sync-validation.yml
+      - .github/resolve-october-sync.py
+      - .github/finish-october-sync.py
 permissions:
   contents: read
 concurrency:
@@ -35,12 +38,14 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/handy-sync"
           cp .github/resolve-october-sync.py "$RUNNER_TEMP/resolve-october-sync.py"
+          cp .github/finish-october-sync.py "$RUNNER_TEMP/finish-october-sync.py"
           git config user.name 'Sergey Morozov'
           git config user.email 'tr0st@bk.ru'
           git remote add upstream https://github.com/cjpais/Handy.git
           git fetch --no-tags upstream main
           test "$(git rev-parse upstream/main)" = 7b2a28a30aa24174292ddd7f4e92e12e6e3bd501
           python3 "$RUNNER_TEMP/resolve-october-sync.py"
+          python3 "$RUNNER_TEMP/finish-october-sync.py"
       - name: Install native prerequisites
         run: |
           set -euo pipefail
