@@ -1,0 +1,42 @@
+name: October upstream sync validation
+on:
+  push:
+    branches: [work/sync-validation-2026-10-12]
+    paths: [.github/workflows/sync-validation.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Export exact histories and rebase conflicts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/handy-sync"
+          git remote add upstream https://github.com/cjpais/Handy.git
+          git fetch --no-tags upstream main
+          test "$(git rev-parse upstream/main)" = 7b2a28a30aa24174292ddd7f4e92e12e6e3bd501
+          git bundle create "$RUNNER_TEMP/handy-sync/source.bundle" --all
+          git log --oneline 330b2ddbed3daab8f1fb09385cc1aaf73708e9d7..upstream/main > "$RUNNER_TEMP/handy-sync/upstream-commits.txt"
+          git config user.name 'Handy sync validation'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout --detach 9d4253da60b479c8bdc01b43d255b415dbd0bd09
+          if git rebase --onto 7b2a28a30aa24174292ddd7f4e92e12e6e3bd501 330b2ddbed3daab8f1fb09385cc1aaf73708e9d7; then
+            git show -s --format='%H %s' > "$RUNNER_TEMP/handy-sync/rebase-result.txt"
+          else
+            git status --short | tee "$RUNNER_TEMP/handy-sync/rebase-result.txt"
+            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/handy-sync/conflict-files.txt"
+            git diff > "$RUNNER_TEMP/handy-sync/conflicts.diff"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: handy-october-sync-source
+          path: ${{ runner.temp }}/handy-sync/
+          retention-days: 7
