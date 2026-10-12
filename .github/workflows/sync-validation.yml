@@ -5,38 +5,152 @@ on:
     paths: [.github/workflows/sync-validation.yml]
 permissions:
   contents: read
+concurrency:
+  group: handy-october-sync-validation
+  cancel-in-progress: true
 jobs:
-  inspect:
+  prepare:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 35
+    permissions:
+      contents: write
+    outputs:
+      candidate: ${{ steps.publish.outputs.candidate }}
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CMAKE_BUILD_PARALLEL_LEVEL: "2"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      TRANSCRIBE_CMAKE_ARGS: "-DTRANSCRIBE_VULKAN=OFF -DGGML_CPU_ALL_VARIANTS=OFF"
+      GIT_EDITOR: "true"
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          persist-credentials: false
-      - name: Export exact histories and rebase conflicts
-        shell: bash
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - name: Reproduce reviewed rebase resolutions
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/handy-sync"
+          cp .github/resolve-october-sync.py "$RUNNER_TEMP/resolve-october-sync.py"
+          git config user.name 'Sergey Morozov'
+          git config user.email 'tr0st@bk.ru'
           git remote add upstream https://github.com/cjpais/Handy.git
           git fetch --no-tags upstream main
           test "$(git rev-parse upstream/main)" = 7b2a28a30aa24174292ddd7f4e92e12e6e3bd501
-          git bundle create "$RUNNER_TEMP/handy-sync/source.bundle" --all
-          git log --oneline 330b2ddbed3daab8f1fb09385cc1aaf73708e9d7..upstream/main > "$RUNNER_TEMP/handy-sync/upstream-commits.txt"
-          git config user.name 'Handy sync validation'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git checkout --detach 9d4253da60b479c8bdc01b43d255b415dbd0bd09
-          if git rebase --onto 7b2a28a30aa24174292ddd7f4e92e12e6e3bd501 330b2ddbed3daab8f1fb09385cc1aaf73708e9d7; then
-            git show -s --format='%H %s' > "$RUNNER_TEMP/handy-sync/rebase-result.txt"
-          else
-            git status --short | tee "$RUNNER_TEMP/handy-sync/rebase-result.txt"
-            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/handy-sync/conflict-files.txt"
-            git diff > "$RUNNER_TEMP/handy-sync/conflicts.diff"
-          fi
+          python3 "$RUNNER_TEMP/resolve-october-sync.py"
+      - name: Install native prerequisites
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev libopenblas-dev libx11-dev libxtst-dev libxrandr-dev libgtk-layer-shell-dev libvulkan-dev glslc spirv-headers glslang-tools xvfb
+          test -s src-tauri/resources/models/silero-vad-v6.2-F32.gguf
+          curl -fL --retry 2 -o /tmp/ort.tgz https://blob.handy.computer/onnxruntime-linux-x86_64-1.24.2.tgz
+          tar -xzf /tmp/ort.tgz -C /tmp
+          echo 'ORT_LIB_LOCATION=/tmp/onnxruntime-linux-x86_64-1.24.2/lib' >> "$GITHUB_ENV"
+          echo 'ORT_PREFER_DYNAMIC_LINK=1' >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=/tmp/onnxruntime-linux-x86_64-1.24.2/lib:$PWD/src-tauri/target/debug" >> "$GITHUB_ENV"
+      - name: Record toolchain and resolve merged lockfile
+        id: toolchain
+        run: |
+          set -euo pipefail
+          rustc -vV | tee "$RUNNER_TEMP/handy-sync/rustc.txt"
+          echo "identity=$(rustc -vV | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          cargo metadata --manifest-path src-tauri/Cargo.toml --format-version 1 --filter-platform x86_64-unknown-linux-gnu > "$RUNNER_TEMP/handy-sync/cargo-metadata.json"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: handy-sync-cpu-v1-${{ steps.toolchain.outputs.identity }}-${{ hashFiles('src-tauri/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: handy-sync-cpu-v1-${{ steps.toolchain.outputs.identity }}-${{ hashFiles('src-tauri/Cargo.lock') }}-
+      - name: Prepare frontend and format resolved files
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bunx prettier --write src scripts/check-nix-deps.ts package.json
+          cargo fmt --manifest-path src-tauri/Cargo.toml
+          bun run build 2>&1 | tee "$RUNNER_TEMP/handy-sync/frontend-build.log"
+      - name: Compile native tests and regenerate real IPC bindings
+        run: |
+          set -euo pipefail
+          HANDY_UPDATE_BINDINGS=1 xvfb-run -a cargo test --manifest-path src-tauri/Cargo.toml --locked --lib generated_typescript_bindings_are_current 2>&1 | tee "$RUNNER_TEMP/handy-sync/bindings.log"
+      - name: Frontend checks with generated bindings
+        run: |
+          set -euo pipefail
+          { bun run build; bun run lint; bun run check:translations; bun run check:model-languages; bun run test:keyboard; bun run format:check; } 2>&1 | tee "$RUNNER_TEMP/handy-sync/frontend-checks.log"
+          bunx bun2nix@2.1.2 -o .nix/bun.nix
+          test "$(sha256sum bun.lock | cut -d' ' -f1)" = "$(cat .nix/bun-lock-hash)"
+      - name: Native regression tests and lint
+        run: |
+          set -euo pipefail
+          cargo check --manifest-path src-tauri/Cargo.toml --locked --tests 2>&1 | tee "$RUNNER_TEMP/handy-sync/cargo-check.log"
+          cargo clippy --manifest-path src-tauri/Cargo.toml --locked --tests 2>&1 | tee "$RUNNER_TEMP/handy-sync/clippy.log"
+          xvfb-run -a cargo test --manifest-path src-tauri/Cargo.toml --locked --lib 2>&1 | tee "$RUNNER_TEMP/handy-sync/tests.log"
+      - name: Publish one-commit candidate, not main
+        id: publish
+        run: |
+          set -euo pipefail
+          git add -u
+          git -c core.whitespace=-blank-at-eol diff --cached --check
+          git diff --exit-code d12cb71a3395d50166f74870f4f202a30f00dabe -- .github/workflows
+          git rebase --continue
+          git commit --amend -m 'feat: preserve reliable Codex dictation on current Handy upstream' -m 'Rebase the fork onto 7b2a28a3, preserving recoverable recordings, provider-aware History Retry, account-safe authentication and Unicode input. Adapt virtual models to handy-recorder and the isolated inference supervisor, retain upstream VAD and cancellation fixes, and refresh generated bindings and the merged lockfile. Keep one fork-specific commit and the previously verified Nix tooling. AI-assisted sync requested by the repository owner.'
+          test "$(git rev-parse HEAD^)" = 7b2a28a30aa24174292ddd7f4e92e12e6e3bd501
+          test "$(git rev-list --count HEAD^..HEAD)" = 1
+          git diff --exit-code
+          git push --force-with-lease=refs/heads/work/sync-candidate-2026-10-12:d12cb71a3395d50166f74870f4f202a30f00dabe origin HEAD:refs/heads/work/sync-candidate-2026-10-12
+          echo "candidate=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git show -s --format='%H%n%T%n%P%n%s' HEAD | tee "$RUNNER_TEMP/handy-sync/candidate.txt"
+      - name: Export source and diagnostics
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/handy-sync"
+          git bundle create "$RUNNER_TEMP/handy-sync/source.bundle" HEAD --all
+          git diff HEAD > "$RUNNER_TEMP/handy-sync/uncommitted.diff"
+          git status --short > "$RUNNER_TEMP/handy-sync/status.txt"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: handy-october-sync-source
+          name: handy-october-native-validation
           path: ${{ runner.temp }}/handy-sync/
+          retention-days: 7
+  nix-build:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.candidate }}
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71
+        with:
+          name: handy-computer
+          skipPush: true
+      - name: Evaluate both Linux packages
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/handy-nix"
+          git show -s --format='%H%n%T%n%P%n%s' HEAD > "$RUNNER_TEMP/handy-nix/candidate.txt"
+          for platform in x86_64-linux aarch64-linux; do
+            nix eval --no-update-lock-file --raw ".#packages.$platform.handy.drvPath" | tee "$RUNNER_TEMP/handy-nix/$platform.txt"
+          done
+      - name: Build and smoke-test actual Nix package
+        run: |
+          set -euo pipefail
+          nix build --no-update-lock-file .#handy -L --show-trace 2>&1 | tee "$RUNNER_TEMP/handy-nix/build.log"
+          test -x result/bin/handy
+          result/bin/handy --help | tee "$RUNNER_TEMP/handy-nix/help.txt"
+          readlink -f result > "$RUNNER_TEMP/handy-nix/result.txt"
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: handy-october-nix-validation
+          path: ${{ runner.temp }}/handy-nix/
           retention-days: 7
