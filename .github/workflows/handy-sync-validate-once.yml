@@ -1,4 +1,4 @@
-name: "Handy sync verified exact SHA 31f6a157 (temporary)"
+name: "Handy sync verified exact SHA cf8f8a53 (temporary)"
 on:
   push:
     branches:
@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
-          ref: 31f6a1574635ce00f94ba405d8b01db9d349d108
+          ref: cf8f8a53caec2c317019c44d5f33d6f455cc6afd
       - uses: oven-sh/setup-bun@v2
       - name: Install Linux build prerequisites
         run: |
@@ -77,7 +77,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
-          ref: 31f6a1574635ce00f94ba405d8b01db9d349d108
+          ref: cf8f8a53caec2c317019c44d5f33d6f455cc6afd
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.2"
@@ -117,4 +117,4 @@ jobs:
 
 # Validate Codex/cloud Rust source without obsolete transcribe-rs dep.
 
-# Pin both validation jobs to candidate 31f6a1574635ce00f94ba405d8b01db9d349d108.
+# Pin both validation jobs to candidate cf8f8a53caec2c317019c44d5f33d6f455cc6afd.
