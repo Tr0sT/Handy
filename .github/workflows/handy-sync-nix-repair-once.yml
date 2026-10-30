@@ -1,0 +1,38 @@
+name: "Repair candidate Nix dependency identity (temporary)"
+on:
+  push:
+    branches:
+      - work/handy-sync-2026-10-30-run
+
+permissions:
+  contents: write
+
+jobs:
+  regen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/handy-sync-candidate-2026-10-30
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - name: Regenerate Nix metadata exactly as its CI requires
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Before: $(git rev-parse HEAD)"
+          bunx bun2nix@2.1.2 -o .nix/bun.nix
+          sha256sum bun.lock | cut -d' ' -f1 > .nix/bun-lock-hash
+          echo "Nix regeneration diff"
+          git diff --stat -- .nix/bun.nix .nix/bun-lock-hash
+          git config user.name "Handy sync automation"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .nix/bun.nix .nix/bun-lock-hash
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: refresh Nix dependency metadata for upstream"
+            git push origin HEAD:refs/heads/work/handy-sync-candidate-2026-10-30
+          fi
+          echo "Candidate after Nix metadata: $(git rev-parse HEAD)"
