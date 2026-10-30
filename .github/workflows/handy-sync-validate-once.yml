@@ -110,3 +110,5 @@ jobs:
           path: ${{ runner.temp }}/handy-nix-build.log
           if-no-files-found: ignore
           retention-days: 7
+
+# Check candidate after restoring TypeScript language detection binding.
