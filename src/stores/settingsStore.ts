@@ -9,6 +9,7 @@ import type {
   TranscribeAcceleratorSetting,
   ShortcutActivation,
   VadBackend,
+  DirectInputFallback,
   LanguageDetectionMode,
 } from "@/bindings";
 import { commands } from "@/bindings";
@@ -153,6 +154,8 @@ const settingUpdaters: {
   reliable_paste: (value) =>
     commands.changeReliablePasteSetting(value as boolean),
   paste_method: (value) => commands.changePasteMethodSetting(value as string),
+  direct_input_fallback: (value) =>
+    commands.changeDirectInputFallbackSetting(value as DirectInputFallback),
   typing_tool: (value) => commands.changeTypingToolSetting(value as string),
   external_script_path: (value) =>
     commands.changeExternalScriptPathSetting(value as string | null),
