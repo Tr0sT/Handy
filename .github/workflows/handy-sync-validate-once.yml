@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
-          ref: cec34ea8111fa2047d59ac4d606d8419087ff4a3
+          ref: 72f94231d95132b5b7ac4b726bd861a554d5a934
       - uses: oven-sh/setup-bun@v2
       - name: Install Linux build prerequisites
         run: |
@@ -77,7 +77,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
-          ref: cec34ea8111fa2047d59ac4d606d8419087ff4a3
+          ref: 72f94231d95132b5b7ac4b726bd861a554d5a934
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.2"
@@ -117,4 +117,4 @@ jobs:
 
 # Validate Codex/cloud Rust source without obsolete transcribe-rs dep.
 
-# Pin both validation jobs to candidate cec34ea8111fa2047d59ac4d606d8419087ff4a3.
+# Pin both validation jobs to candidate 72f94231d95132b5b7ac4b726bd861a554d5a934.
