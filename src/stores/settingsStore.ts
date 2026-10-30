@@ -10,6 +10,7 @@ import type {
   ShortcutActivation,
   VadBackend,
   DirectInputFallback,
+  LanguageDetectionMode,
 } from "@/bindings";
 import { commands } from "@/bindings";
 import { toast } from "sonner";
