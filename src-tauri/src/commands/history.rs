@@ -89,7 +89,39 @@ pub async fn transcribe_file(
     let jobs = Arc::clone(&jobs);
     tauri::async_runtime::spawn_blocking(move || jobs.transcribe_file(PathBuf::from(path)))
         .await
-        .map_err(|e| format!("Failed to read the file: {}", e))?
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("History entry {} not found", id))?;
+
+    let audio_path = history_manager.get_audio_file_path(&entry.file_name);
+    let samples = crate::audio_toolkit::read_wav_samples(&audio_path)
+        .map_err(|e| format!("Failed to load audio: {}", e))?;
+
+    if samples.is_empty() {
+        return Err("Recording has no audio samples".to_string());
+    }
+
+    transcription_manager.initiate_model_load();
+
+    let model_id = crate::settings::get_settings(&app).selected_model;
+    let transcription = transcription_manager
+        .transcribe_audio(samples, &model_id, false, || false)
+        .await?
+        .ok_or("Transcription cancelled")?;
+
+    if transcription.is_empty() {
+        return Err("Recording contains no speech".to_string());
+    }
+
+    let processed =
+        process_transcription_output(&app, &transcription, entry.post_process_requested).await;
+    history_manager
+        .update_transcription(
+            id,
+            transcription,
+            processed.post_processed_text,
+            processed.post_process_prompt,
+        )
+        .map(|_| ())
         .map_err(|e| e.to_string())
 }
 

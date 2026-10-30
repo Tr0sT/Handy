@@ -25,6 +25,7 @@ serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 
 [dependencies]
+tempfile = "3"
 once_cell = "1"
 # The OS's preferred languages (macOS, Linux; Windows' fallback). Already
 # pulled in by tauri-plugin-os.
@@ -62,7 +63,9 @@ symphonia = { version = "0.5.5", features = ["aac", "alac", "isomp4", "mp3", "ai
 # Resamples a decoded file to 16 kHz; the version handy-recorder already uses.
 rubato = "5"
 handy-recorder = "0.1"
-reqwest = { version = "0.12", features = ["json", "stream", "gzip", "brotli", "deflate"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls", "gzip", "brotli", "deflate"] }
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
 futures-util = "0.3"
 rustfft = "6.4.0"
 strsim = "0.11.0"
@@ -76,9 +79,13 @@ chrono = "0.4"
 rusqlite = { version = "0.37", features = ["bundled"] }
 sha2 = "0.10"
 libc = "0.2"
-# Every model runs through transcribe-cpp (GGUF/ggml, native backends).
-# Per-platform backend features are added in the target tables (Cargo unifies
-# features, so `serde` here applies to every platform).
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+url = "2"
+# Whisper-family models run through transcribe-cpp (GGUF/ggml, native backends);
+# transcribe-rs is now ONNX-only (Parakeet, Moonshine, SenseVoice, GigaAM,
+# Canary, Cohere). Per-platform backend features are added in the target tables
+# (Cargo unifies features, so `serde` here applies to every platform).
+transcribe-rs = { version = "0.3.8", features = ["onnx"] }
 transcribe-cpp = { version = "0.4.0", default-features = false, features = [
   "serde",
 ] }
@@ -92,6 +99,7 @@ tauri-plugin-dialog = "2.6"
 hf-hub = { git = "https://github.com/cjpais/hf-hub", branch = "cancellable-downloads", features = [
   "tokio",
 ] }
+tauri-plugin-notification = "2.3.3"
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3"
@@ -195,7 +203,6 @@ tao = { git = "https://github.com/cjpais/tao", rev = "c3bee28c1d446d95f08c95c3b6
 tao-macros = { git = "https://github.com/cjpais/tao", rev = "c3bee28c1d446d95f08c95c3b6f8d4bde052b876" }
 
 [dev-dependencies]
-tempfile = "3"
 # Test-only tokio features for the local socket servers exercising the
 # resumable HTTP downloader; normal builds keep the leaner feature set.
 tokio = { version = "1.43.0", features = ["macros", "net", "io-util", "sync", "time", "rt-multi-thread"] }

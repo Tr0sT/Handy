@@ -42,7 +42,11 @@ pub use job::ChunkControl;
 
 const STREAM_PERF_LOG_INTERVAL: Duration = Duration::from_secs(5);
 
-pub(crate) fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+fn cached_model_matches(is_loaded: bool, current: Option<&str>, selected: &str) -> bool {
+    is_loaded && current == Some(selected)
+}
+
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
         (*message).to_string()
     } else if let Some(message) = payload.downcast_ref::<String>() {
@@ -377,6 +381,17 @@ impl TranscriptionManager {
         // A transcribe-cpp model stays loaded while it is busy, so a batch
         // run or stream in progress never reads as "unloaded".
         self.engine.loaded().is_some()
+            || self.lock_onnx().is_some()
+            || self
+                .current_model_id
+                .lock()
+                .unwrap()
+                .as_deref()
+                .is_some_and(|id| {
+                    self.model_manager
+                        .get_model_info(id)
+                        .is_some_and(|model| model.engine_type == EngineType::CloudCodex)
+                })
     }
 
     /// Accelerator changes should not disturb the current transcription. Mark
@@ -573,6 +588,26 @@ impl TranscriptionManager {
             );
         };
 
+        // A virtual provider has neither an ONNX engine nor a native worker.
+        // Queue the unload before publishing its id so it cannot unload a
+        // later selection when the previous worker eventually exits.
+        if model_info.engine_type == EngineType::CloudCodex {
+            self.cancel_stream();
+            self.request_unload();
+            *self.current_model_id.lock().unwrap() = Some(model_id.to_string());
+            self.touch_activity();
+            let _ = self.app_handle.emit(
+                "model-state-changed",
+                ModelStateEvent {
+                    event_type: "loading_completed".to_string(),
+                    model_id: Some(model_id.to_string()),
+                    model_name: Some(model_info.name.clone()),
+                    error: None,
+                },
+            );
+            return Ok(());
+        }
+
         if !model_info.is_downloaded {
             let error_msg = "Model not downloaded";
             emit_loading_failed(error_msg);
@@ -591,26 +626,146 @@ impl TranscriptionManager {
             *current_model = None;
         }
 
-        // The backend is chosen at load time. With an explicit
-        // `device_index` (the --device-index flag) hard-select that
-        // registered device; otherwise re-read the persisted
-        // accelerator preference (so an accelerator change marked for
-        // reload takes effect here). The worker resolves the selector
-        // to a device handle, and rejects an index that isn't a
-        // loadable device (a host without GPU access lists none).
-        let (backend, device) = match device_index {
-            Some(index) => (Backend::Auto, DeviceSelector::Index(index)),
-            None => {
-                let settings = get_settings(&self.app_handle);
-                let accelerator = settings.transcribe_accelerator;
-                match resolve_gpu_device(accelerator, settings.transcribe_gpu_device.as_deref()) {
-                    // Backend::Auto accepts an exact GPU device.
-                    Some(key) => (Backend::Auto, DeviceSelector::Key(key)),
-                    // Without a valid exact device, backend selection
-                    // handles the retired generic GPU state and host
-                    // CPU guard.
-                    None => (select_transcribe_backend(accelerator), DeviceSelector::Auto),
-                }
+        // Create appropriate engine based on model type
+
+        let loaded_onnx = match model_info.engine_type {
+            EngineType::CloudCodex => unreachable!("virtual provider handled before local loading"),
+            EngineType::TranscribeCpp => {
+                // The backend is chosen at load time. With an explicit
+                // `device_index` (the --device-index flag) hard-select that
+                // registered device; otherwise re-read the persisted
+                // accelerator preference (so an accelerator change marked for
+                // reload takes effect here). The worker resolves the selector
+                // to a device handle, and rejects an index that isn't a
+                // loadable device (a host without GPU access lists none).
+                let (backend, device) = match device_index {
+                    Some(index) => (Backend::Auto, DeviceSelector::Index(index)),
+                    None => {
+                        let settings = get_settings(&self.app_handle);
+                        let accelerator = settings.transcribe_accelerator;
+                        match resolve_gpu_device(
+                            accelerator,
+                            settings.transcribe_gpu_device.as_deref(),
+                        ) {
+                            // Backend::Auto accepts an exact GPU device.
+                            Some(key) => (Backend::Auto, DeviceSelector::Key(key)),
+                            // Without a valid exact device, backend selection
+                            // handles the retired generic GPU state and host
+                            // CPU guard.
+                            None => (select_transcribe_backend(accelerator), DeviceSelector::Auto),
+                        }
+                    }
+                };
+                let requested_device = format!("{:?}", device);
+                let info = self
+                    .engine
+                    .load(LoadSpec {
+                        path: model_path.clone(),
+                        backend,
+                        device,
+                    })
+                    .map_err(|e| {
+                        let error_msg = format!("Failed to load model {}: {}", model_id, e);
+                        emit_loading_failed(&error_msg);
+                        anyhow::anyhow!(error_msg)
+                    })?;
+                // Reconcile the registry's advertised capabilities with the
+                // loaded model's real ones (GGUF metadata) so badges/gating
+                // reflect runtime truth, not the pre-download probe. The
+                // load-completed event below triggers the frontend refresh.
+                let caps = &info.capabilities;
+                self.model_manager.set_runtime_capabilities(
+                    model_id,
+                    caps.supports_streaming,
+                    caps.supports_translate,
+                    caps.supports_language_detect,
+                    caps.languages.clone(),
+                );
+                // The bound backend may differ from the request (e.g. CPU
+                // fallback under Auto or after a GPU crash); log what loaded.
+                info!(
+                    "Loaded transcribe-cpp model '{}' (requested {:?}, requested device {}, \
+                     bound backend '{}', bound device '{}', supports_streaming={}, \
+                     supports_translate={}, supports_language_detect={})",
+                    model_id,
+                    backend,
+                    requested_device,
+                    info.backend,
+                    info.device,
+                    caps.supports_streaming,
+                    caps.supports_translate,
+                    caps.supports_language_detect
+                );
+                None
+            }
+            EngineType::Parakeet => {
+                let engine =
+                    ParakeetModel::load(&model_path, &Quantization::Int8).map_err(|e| {
+                        let error_msg =
+                            format!("Failed to load parakeet model {}: {}", model_id, e);
+                        emit_loading_failed(&error_msg);
+                        anyhow::anyhow!(error_msg)
+                    })?;
+                Some(OnnxEngine::Parakeet(engine))
+            }
+            EngineType::Moonshine => {
+                let engine = MoonshineModel::load(
+                    &model_path,
+                    MoonshineVariant::Base,
+                    &Quantization::default(),
+                )
+                .map_err(|e| {
+                    let error_msg = format!("Failed to load moonshine model {}: {}", model_id, e);
+                    emit_loading_failed(&error_msg);
+                    anyhow::anyhow!(error_msg)
+                })?;
+                Some(OnnxEngine::Moonshine(engine))
+            }
+            EngineType::MoonshineStreaming => {
+                let engine = StreamingModel::load(&model_path, 0, &Quantization::default())
+                    .map_err(|e| {
+                        let error_msg = format!(
+                            "Failed to load moonshine streaming model {}: {}",
+                            model_id, e
+                        );
+                        emit_loading_failed(&error_msg);
+                        anyhow::anyhow!(error_msg)
+                    })?;
+                Some(OnnxEngine::MoonshineStreaming(engine))
+            }
+            EngineType::SenseVoice => {
+                let engine =
+                    SenseVoiceModel::load(&model_path, &Quantization::Int8).map_err(|e| {
+                        let error_msg =
+                            format!("Failed to load SenseVoice model {}: {}", model_id, e);
+                        emit_loading_failed(&error_msg);
+                        anyhow::anyhow!(error_msg)
+                    })?;
+                Some(OnnxEngine::SenseVoice(engine))
+            }
+            EngineType::GigaAM => {
+                let engine = GigaAMModel::load(&model_path, &Quantization::Int8).map_err(|e| {
+                    let error_msg = format!("Failed to load gigaam model {}: {}", model_id, e);
+                    emit_loading_failed(&error_msg);
+                    anyhow::anyhow!(error_msg)
+                })?;
+                Some(OnnxEngine::GigaAM(engine))
+            }
+            EngineType::Canary => {
+                let engine = CanaryModel::load(&model_path, &Quantization::Int8).map_err(|e| {
+                    let error_msg = format!("Failed to load canary model {}: {}", model_id, e);
+                    emit_loading_failed(&error_msg);
+                    anyhow::anyhow!(error_msg)
+                })?;
+                Some(OnnxEngine::Canary(engine))
+            }
+            EngineType::Cohere => {
+                let engine = CohereModel::load(&model_path, &Quantization::Int8).map_err(|e| {
+                    let error_msg = format!("Failed to load cohere model {}: {}", model_id, e);
+                    emit_loading_failed(&error_msg);
+                    anyhow::anyhow!(error_msg)
+                })?;
+                Some(OnnxEngine::Cohere(engine))
             }
         };
         let requested_device = format!("{:?}", device);
@@ -685,13 +840,22 @@ impl TranscriptionManager {
 
     /// Kicks off the model loading in a background thread if it's not already loaded
     pub fn initiate_model_load(&self) {
+        let settings = get_settings(&self.app_handle);
         let mut is_loading = self.is_loading.lock().unwrap();
         if *is_loading {
             return;
         }
 
         let reload_pending = self.reload_model_on_next_use.load(Ordering::Acquire);
-        if !reload_pending && self.is_model_loaded() {
+        let is_loaded = self.is_model_loaded();
+        let current_model = self.current_model_id.lock().unwrap().clone();
+        if !reload_pending
+            && cached_model_matches(
+                is_loaded,
+                current_model.as_deref(),
+                &settings.selected_model,
+            )
+        {
             return;
         }
 
@@ -703,7 +867,6 @@ impl TranscriptionManager {
                     .reload_model_on_next_use
                     .store(false, Ordering::Release);
             }
-            let settings = get_settings(&self_clone.app_handle);
             if let Err(e) = self_clone.load_model(&settings.selected_model) {
                 error!("Failed to load model: {}", e);
             }
@@ -715,7 +878,21 @@ impl TranscriptionManager {
 
     pub fn get_current_model(&self) -> Option<String> {
         let current_model = self.current_model_id.lock().unwrap();
-        current_model.clone()
+        if current_model.is_some() {
+            return current_model.clone();
+        }
+        drop(current_model);
+
+        let settings = get_settings(&self.app_handle);
+        if self
+            .model_manager
+            .get_model_info(&settings.selected_model)
+            .is_some_and(|model| model.engine_type == EngineType::CloudCodex)
+        {
+            Some(settings.selected_model)
+        } else {
+            None
+        }
     }
 
     /// The compute backend the currently-loaded engine is bound to, for
@@ -922,8 +1099,67 @@ impl TranscriptionManager {
         .emit(&self.app_handle);
     }
 
-    /// Transcribe a whole clip in batch: a re-transcribed history entry, or
-    /// a file from the CLI.
+    /// Provider-aware entry point shared by live dictation, History Retry and
+    /// the headless CLI. Only live dictation may finalize an active stream.
+    /// The explicit model id also preserves the CLI's non-persisted --model.
+    pub async fn transcribe_audio<C>(
+        self: &Arc<Self>,
+        audio: Vec<f32>,
+        model_id: &str,
+        finish_stream: bool,
+        is_cancelled: C,
+    ) -> Result<Option<String>, String>
+    where
+        C: Fn() -> bool,
+    {
+        let model = self
+            .model_manager
+            .get_model_info(model_id)
+            .ok_or_else(|| format!("Model not found: {model_id}"))?;
+        let settings = get_settings(&self.app_handle);
+        let language =
+            effective_language_for_model(&settings, self.model_manager.as_ref(), model_id);
+        // Futures are lazy: only the selected provider gets polled. There is no
+        // download/engine requirement for a cloud model and no HTTP for local STT.
+        let samples = Arc::new(audio);
+        let local_samples = Arc::clone(&samples);
+        let manager = Arc::clone(self);
+        crate::transcription_pipeline::run_provider(
+            model.engine_type == EngineType::CloudCodex,
+            async move {
+                tauri::async_runtime::spawn_blocking(move || {
+                    let stream = if finish_stream {
+                        manager.finalize_stream()?
+                    } else {
+                        None
+                    };
+                    if let Some(text) = stream.filter(|text| !text.trim().is_empty()) {
+                        return Ok(text);
+                    }
+                    manager.transcribe(Arc::unwrap_or_clone(local_samples))
+                })
+                .await
+                .map_err(|e| format!("Transcription task failed: {e}"))?
+                .map_err(|e: anyhow::Error| e.to_string())
+            },
+            async {
+                let language = if language == "auto" {
+                    None
+                } else {
+                    Some(language.as_str())
+                };
+                crate::commands::cloud_stt::codex_transcribe_samples(
+                    &self.app_handle,
+                    &samples,
+                    language,
+                )
+                .await
+            },
+            is_cancelled,
+        )
+        .await
+    }
+
     pub fn transcribe(&self, audio: Vec<f32>) -> Result<String> {
         Ok(self.complete(Instant::now(), audio, None)?.text)
     }
@@ -2380,6 +2616,35 @@ impl Drop for TranscriptionManager {
             } else {
                 debug!("Idle watcher thread joined successfully");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod virtual_model_switch_tests {
+    use super::cached_model_matches;
+    use crate::managers::model::CODEX_LOCAL_MODEL_ID;
+
+    #[test]
+    fn switching_away_from_virtual_provider_does_not_skip_local_loading() {
+        assert!(!cached_model_matches(
+            true,
+            Some(CODEX_LOCAL_MODEL_ID),
+            "whisper"
+        ));
+        assert!(!cached_model_matches(
+            true,
+            Some("whisper"),
+            CODEX_LOCAL_MODEL_ID
+        ));
+    }
+
+    #[test]
+    fn only_the_requested_loaded_model_can_be_reused() {
+        for selected in [CODEX_LOCAL_MODEL_ID, "whisper"] {
+            assert!(cached_model_matches(true, Some(selected), selected));
+            assert!(!cached_model_matches(false, Some(selected), selected));
+            assert!(!cached_model_matches(true, None, selected));
         }
     }
 }
