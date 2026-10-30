@@ -30,11 +30,19 @@ jobs:
           test "$(git rev-parse "$SOURCE_SHA^")" = 7b2a28a30aa24174292ddd7f4e92e12e6e3bd501
           git switch --detach "$UPSTREAM_SHA"
           if ! git cherry-pick -X theirs "$SOURCE_SHA"; then
-            echo "::error::The upstream changes conflict with the fork patch."
-            git status --short
-            git diff --name-only --diff-filter=U
-            git diff --check || true
-            exit 1
+            echo "Cherry-pick stopped. Inspecting conflicts."
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            if [ "$conflicts" = "src/components/onboarding/ModelCard.tsx" ]; then
+              # The old onboarding ModelCard was removed by upstream's entirely new onboarding.
+              # Its fork-specific model treatment needs a review in the new onboarding code.
+              git rm -- src/components/onboarding/ModelCard.tsx
+              GIT_EDITOR=true git cherry-pick --continue
+            else
+              echo "::error::Unresolved upstream/fork conflicts:"
+              printf '%s\\n' "$conflicts"
+              git status --short
+              exit 1
+            fi
           fi
           test "$(git rev-parse HEAD^)" = "$UPSTREAM_SHA"
           git diff --check HEAD^ HEAD
