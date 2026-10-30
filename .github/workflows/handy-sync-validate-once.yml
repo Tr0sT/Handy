@@ -112,3 +112,5 @@ jobs:
           retention-days: 7
 
 # Check candidate after restoring TypeScript language detection binding.
+
+# Check candidate after formatting Codex panel and safeguarding virtual model.
