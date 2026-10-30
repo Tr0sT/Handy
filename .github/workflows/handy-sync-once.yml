@@ -56,5 +56,14 @@ jobs:
           echo "Candidate SHA: $(git rev-parse HEAD)"
           echo "Changed files:"
           git diff --stat HEAD^ HEAD | tail -n 100
-          echo "Pushing candidate branch for review only (NOT main)"
+          # GITHUB_TOKEN cannot update workflow files. Keep the preliminary
+          # candidate's workflow paths identical to upstream; a separate,
+          # owner-authorized GitHub connector write will restore the two fork
+          # regression workflows in a single commit with the same parent.
+          git restore --source="$UPSTREAM_SHA" --staged --worktree -- .github/workflows/nix-check.yml
+          git rm -- .github/workflows/fork-regressions.yml
+          git commit --amend --no-edit
+          test -z "$(git diff --name-only "$UPSTREAM_SHA" HEAD -- .github/workflows)"
+          echo "Intermediate candidate SHA: $(git rev-parse HEAD)"
+          echo "Pushing intermediate candidate branch for review only (NOT main)"
           git push origin HEAD:refs/heads/work/handy-sync-candidate-2026-10-30
