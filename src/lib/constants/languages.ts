@@ -13,165 +13,16 @@ export interface Language {
 // Intl names "nb" Norwegian Bokmål; people say Norwegian.
 const NAME_CODES: Record<string, string> = { nb: "no" };
 
-/**
- * Claude.ai voice pipeline supported language codes (20 languages).
- * Extracted from Claude Code's voice_stream module — the backend only
- * accepts these codes via the `language` query parameter.
- */
-export const CLAUDE_VOICE_LANGUAGES = new Set([
-  "en",
-  "es",
-  "fr",
-  "ja",
-  "de",
-  "pt",
-  "it",
-  "ko",
-  "hi",
-  "id",
-  "ru",
-  "pl",
-  "tr",
-  "nl",
-  "uk",
-  "el",
-  "cs",
-  "da",
-  "sv",
-  "no",
-]);
-
-/**
- * Full Whisper language list — used by local models and Codex (ChatGPT Whisper).
- */
-export const LANGUAGES: Language[] = [
-  { value: "auto", label: "Auto Detect" },
-  { value: "en", label: "English" },
-  { value: "zh", label: "Chinese (Mandarin)" },
-  { value: "yue", label: "Cantonese" },
-  { value: "de", label: "German" },
-  { value: "es", label: "Spanish" },
-  { value: "ru", label: "Russian" },
-  { value: "ko", label: "Korean" },
-  { value: "fr", label: "French" },
-  { value: "ja", label: "Japanese" },
-  { value: "pt", label: "Portuguese" },
-  { value: "tr", label: "Turkish" },
-  { value: "pl", label: "Polish" },
-  { value: "ca", label: "Catalan" },
-  { value: "nl", label: "Dutch" },
-  { value: "ar", label: "Arabic" },
-  { value: "sv", label: "Swedish" },
-  { value: "it", label: "Italian" },
-  { value: "id", label: "Indonesian" },
-  { value: "hi", label: "Hindi" },
-  { value: "fi", label: "Finnish" },
-  { value: "vi", label: "Vietnamese" },
-  { value: "he", label: "Hebrew" },
-  { value: "uk", label: "Ukrainian" },
-  { value: "el", label: "Greek" },
-  { value: "ms", label: "Malay" },
-  { value: "cs", label: "Czech" },
-  { value: "ro", label: "Romanian" },
-  { value: "da", label: "Danish" },
-  { value: "hu", label: "Hungarian" },
-  { value: "ta", label: "Tamil" },
-  { value: "no", label: "Norwegian" },
-  { value: "th", label: "Thai" },
-  { value: "ur", label: "Urdu" },
-  { value: "hr", label: "Croatian" },
-  { value: "bg", label: "Bulgarian" },
-  { value: "lt", label: "Lithuanian" },
-  { value: "la", label: "Latin" },
-  { value: "mi", label: "Maori" },
-  { value: "ml", label: "Malayalam" },
-  { value: "cy", label: "Welsh" },
-  { value: "sk", label: "Slovak" },
-  { value: "te", label: "Telugu" },
-  { value: "fa", label: "Persian" },
-  { value: "lv", label: "Latvian" },
-  { value: "bn", label: "Bengali" },
-  { value: "sr", label: "Serbian" },
-  { value: "az", label: "Azerbaijani" },
-  { value: "sl", label: "Slovenian" },
-  { value: "kn", label: "Kannada" },
-  { value: "et", label: "Estonian" },
-  { value: "mk", label: "Macedonian" },
-  { value: "br", label: "Breton" },
-  { value: "eu", label: "Basque" },
-  { value: "is", label: "Icelandic" },
-  { value: "ga", label: "Irish" },
-  { value: "hy", label: "Armenian" },
-  { value: "ne", label: "Nepali" },
-  { value: "mn", label: "Mongolian" },
-  { value: "bs", label: "Bosnian" },
-  { value: "kk", label: "Kazakh" },
-  { value: "sq", label: "Albanian" },
-  { value: "sw", label: "Swahili" },
-  { value: "gl", label: "Galician" },
-  { value: "mr", label: "Marathi" },
-  { value: "pa", label: "Punjabi" },
-  { value: "si", label: "Sinhala" },
-  { value: "km", label: "Khmer" },
-  { value: "sn", label: "Shona" },
-  { value: "yo", label: "Yoruba" },
-  { value: "so", label: "Somali" },
-  { value: "af", label: "Afrikaans" },
-  { value: "oc", label: "Occitan" },
-  { value: "ka", label: "Georgian" },
-  { value: "be", label: "Belarusian" },
-  { value: "tg", label: "Tajik" },
-  { value: "sd", label: "Sindhi" },
-  { value: "gu", label: "Gujarati" },
-  { value: "am", label: "Amharic" },
-  { value: "yi", label: "Yiddish" },
-  { value: "lo", label: "Lao" },
-  { value: "uz", label: "Uzbek" },
-  { value: "fo", label: "Faroese" },
-  { value: "ht", label: "Haitian Creole" },
-  { value: "ps", label: "Pashto" },
-  { value: "tk", label: "Turkmen" },
-  { value: "nn", label: "Nynorsk" },
-  { value: "mt", label: "Maltese" },
-  { value: "sa", label: "Sanskrit" },
-  { value: "lb", label: "Luxembourgish" },
-  { value: "my", label: "Myanmar" },
-  { value: "bo", label: "Tibetan" },
-  { value: "tl", label: "Filipino (Tagalog)" },
-  { value: "mg", label: "Malagasy" },
-  { value: "as", label: "Assamese" },
-  { value: "tt", label: "Tatar" },
-  { value: "haw", label: "Hawaiian" },
-  { value: "ln", label: "Lingala" },
-  { value: "ha", label: "Hausa" },
-  { value: "ba", label: "Bashkir" },
-  { value: "jw", label: "Javanese" },
-  { value: "su", label: "Sundanese" },
-];
-
-const LANGUAGE_LABELS = new Map(
-  LANGUAGES.map((language) => [language.value, language.label] as const),
-);
-
-export const MODEL_CAPABILITY_LANGUAGES: Language[] = LANGUAGES.filter(
-  (language) => language.value !== "auto",
-);
-
-// Collapse a language tag to the canonical recognition intent Handy exposes in
-// the UI. BCP-47 region/script subtags are dropped ("en-US" → "en",
-// "zh-Hant" → "zh"), and model-specific base-code equivalents are mapped to a
-// stable intent. Norwegian Bokmål (`nb`) maps to Norwegian (`no`), while
-// Nynorsk (`nn`) remains distinct; Filipino (`fil`) maps to Tagalog (`tl`). The
-// backend performs the same equivalence match but returns the model's real code
-// so the engine always receives exactly what it advertises.
-export const recognitionLanguage = (languageCode: string): string => {
-  const separatorIndex = languageCode.indexOf("-");
-  const baseCode =
-    separatorIndex === -1
-      ? languageCode
-      : languageCode.slice(0, separatorIndex);
-
-  return LANGUAGE_ALIASES.get(baseCode) ?? baseCode;
+/** A language's name in the UI language ("Chinese", "Chinesisch"). */
+export const languageName = (code: string, uiLanguage: string): string => {
+  try {
+    const names = new Intl.DisplayNames([uiLanguage, "en"], {
+      type: "language",
+    });
+    return names.of(NAME_CODES[code] ?? code) ?? code;
+  } catch {
+    return code;
+  }
 };
 
 /** Languages' names as a list in the UI language ("English and Chinese"). */
@@ -285,3 +136,31 @@ export const searchLanguages = (
   }
   return hits.sort((a, b) => a[0] - b[0]).map(([, l]) => l);
 };
+
+/**
+ * Claude.ai voice pipeline supported language codes (20 languages).
+ * Extracted from Claude Code's voice_stream module — the backend only
+ * accepts these codes via the `language` query parameter.
+ */
+export const CLAUDE_VOICE_LANGUAGES = new Set([
+  "en",
+  "es",
+  "fr",
+  "ja",
+  "de",
+  "pt",
+  "it",
+  "ko",
+  "hi",
+  "id",
+  "ru",
+  "pl",
+  "tr",
+  "nl",
+  "uk",
+  "el",
+  "cs",
+  "da",
+  "sv",
+  "no",
+]);
