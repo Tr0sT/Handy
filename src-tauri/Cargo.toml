@@ -81,11 +81,9 @@ sha2 = "0.10"
 libc = "0.2"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 url = "2"
-# Whisper-family models run through transcribe-cpp (GGUF/ggml, native backends);
-# transcribe-rs is now ONNX-only (Parakeet, Moonshine, SenseVoice, GigaAM,
-# Canary, Cohere). Per-platform backend features are added in the target tables
-# (Cargo unifies features, so `serde` here applies to every platform).
-transcribe-rs = { version = "0.3.8", features = ["onnx"] }
+# Every native model runs through transcribe-cpp (GGUF/ggml, native backends).
+# Per-platform backend features are added in the target tables (Cargo unifies
+# features, so `serde` here applies to every platform).
 transcribe-cpp = { version = "0.4.0", default-features = false, features = [
   "serde",
 ] }

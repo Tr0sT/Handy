@@ -2556,7 +2556,6 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "transcribe-cpp",
- "transcribe-rs",
  "url",
  "uuid",
  "webview2-com",
