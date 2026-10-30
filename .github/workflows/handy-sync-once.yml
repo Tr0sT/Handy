@@ -45,6 +45,13 @@ jobs:
             fi
           fi
           test "$(git rev-parse HEAD^)" = "$UPSTREAM_SHA"
+          # Generated type bindings have whitespace-only drift after the rebase.
+          # Keep their existing content but remove trailing whitespace in the candidate.
+          python3 -c 'from pathlib import Path; p=Path("src/bindings.ts"); s=p.read_text(); p.write_text("\\n".join(x.rstrip(" \\t") for x in s.split("\\n")))' 
+          if ! git diff --quiet; then
+            git add src/bindings.ts
+            git commit --amend --no-edit
+          fi
           git diff --check HEAD^ HEAD
           echo "Candidate SHA: $(git rev-parse HEAD)"
           echo "Changed files:"
