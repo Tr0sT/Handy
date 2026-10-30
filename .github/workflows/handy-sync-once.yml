@@ -1,0 +1,45 @@
+name: "Handy upstream sync candidate (temporary)"
+on:
+  push:
+    branches:
+      - work/handy-sync-2026-10-30-run
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Rebase the single fork commit onto the exact upstream HEAD
+        env:
+          SOURCE_SHA: 56a126e42ea0a6b4362f6741c62afc36aa25140f
+          UPSTREAM_SHA: 7bfb2e2c934b798bcf6e3627653aed2439996f89
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Handy sync automation"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/cjpais/Handy.git
+          git fetch --no-tags upstream main
+          test "$(git rev-parse upstream/main)" = "$UPSTREAM_SHA"
+          test "$(git rev-parse "$SOURCE_SHA^")" = 7b2a28a30aa24174292ddd7f4e92e12e6e3bd501
+          git switch --detach "$UPSTREAM_SHA"
+          if ! git cherry-pick -X theirs "$SOURCE_SHA"; then
+            echo "::error::The upstream changes conflict with the fork patch."
+            git status --short
+            git diff --name-only --diff-filter=U
+            git diff --check || true
+            exit 1
+          fi
+          test "$(git rev-parse HEAD^)" = "$UPSTREAM_SHA"
+          git diff --check HEAD^ HEAD
+          echo "Candidate SHA: $(git rev-parse HEAD)"
+          echo "Changed files:"
+          git diff --stat HEAD^ HEAD | tail -n 100
+          echo "Pushing candidate branch for review only (NOT main)"
+          git push origin HEAD:refs/heads/work/handy-sync-candidate-2026-10-30
