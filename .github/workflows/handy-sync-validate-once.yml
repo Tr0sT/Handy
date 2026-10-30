@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
-          ref: work/handy-sync-candidate-2026-10-30
+          ref: 3b3ef2c037c5fcc567a7f6ef65e3e9e118bf8b3e
       - uses: oven-sh/setup-bun@v2
       - name: Install Linux build prerequisites
         run: |
@@ -77,7 +77,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
-          ref: work/handy-sync-candidate-2026-10-30
+          ref: 3b3ef2c037c5fcc567a7f6ef65e3e9e118bf8b3e
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.2"
@@ -116,3 +116,5 @@ jobs:
 # Check candidate after formatting Codex panel and safeguarding virtual model.
 
 # Validate Codex/cloud Rust source without obsolete transcribe-rs dep.
+
+# Pin both validation jobs to candidate 3b3ef2c037c5fcc567a7f6ef65e3e9e118bf8b3e.
