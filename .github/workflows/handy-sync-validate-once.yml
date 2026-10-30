@@ -114,3 +114,5 @@ jobs:
 # Check candidate after restoring TypeScript language detection binding.
 
 # Check candidate after formatting Codex panel and safeguarding virtual model.
+
+# Validate Codex/cloud Rust source without obsolete transcribe-rs dep.
