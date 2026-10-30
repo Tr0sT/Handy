@@ -19,6 +19,7 @@ use tauri_specta::Event;
 use crate::actions::process_transcription_output;
 use crate::audio_toolkit::{decode_audio_file, read_wav_samples, save_wav_file};
 use crate::managers::history::{HistoryEntry, HistoryManager};
+use crate::managers::model::CODEX_LOCAL_MODEL_ID;
 use crate::managers::transcription::{
     panic_payload_message, ChunkControl, Transcription, TranscriptionManager,
 };
@@ -296,8 +297,28 @@ impl TranscriptionJobManager {
             cancelled,
             percent: Cell::new(0),
         };
-        let Some(Transcription { text, language }) = tm.transcribe_in_chunks(samples, &control)?
-        else {
+        let selected_model = crate::settings::get_settings(&self.app).selected_model;
+        let transcription = if selected_model == CODEX_LOCAL_MODEL_ID {
+            // A cloud provider has no native model to load. Preserve the same
+            // History queue/cancellation semantics for files and Retry.
+            if !control.proceed() {
+                return Ok(());
+            }
+            tauri::async_runtime::block_on(tm.transcribe_audio(
+                samples,
+                &selected_model,
+                false,
+                || cancelled.load(Ordering::Acquire),
+            ))
+            .map_err(|e| anyhow!(e))?
+            .map(|text| Transcription {
+                text,
+                language: None,
+            })
+        } else {
+            tm.transcribe_in_chunks(samples, &control)?
+        };
+        let Some(Transcription { text, language }) = transcription else {
             return Ok(());
         };
         if text.is_empty() {
