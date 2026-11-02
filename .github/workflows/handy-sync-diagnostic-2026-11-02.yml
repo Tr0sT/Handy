@@ -1,0 +1,39 @@
+name: "Temporary Handy upstream cherry-pick diagnostic"
+on:
+  push:
+    branches: [work/handy-sync-rebase-helper-2026-11-02]
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Dry-run single fork commit onto new upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Handy Sync Bot"
+          git config user.email "handy-sync@users.noreply.github.com"
+          git fetch https://github.com/cjpais/Handy.git main
+          test "$(git rev-parse FETCH_HEAD)" = "b99b9af2c40c9765d496c2db68b4fecf8749e66b"
+          git checkout --detach b99b9af2c40c9765d496c2db68b4fecf8749e66b
+          set +e
+          git cherry-pick --no-commit df04360560e5a8ec27c5505e3549fb5fa933b747
+          rc=$?
+          set -e
+          echo "Cherry-pick exit: $rc"
+          echo "Conflicting paths:"
+          git diff --name-only --diff-filter=U
+          echo "Working-tree changes:"
+          git status --short
+          if [ "$rc" -ne 0 ]; then
+            echo "Diff conflict sections:"
+            git diff --check || true
+            exit 1
+          fi
+          git diff --cached --check
