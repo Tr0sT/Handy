@@ -79,6 +79,108 @@ jobs:
           t=t.replace(old,listener+old)
           p.write_text(t)
           PY
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("src-tauri/src/actions.rs")
+          s=p.read_text()
+          def replace(old, new):
+              global s
+              count=s.count(old)
+              if count != 1:
+                  raise RuntimeError(f"expected unique patch point, got {count}: {old[:110]!r}")
+              s=s.replace(old,new)
+          # A recording that fails to stop should also enter the new persistent notices UI.
+          replace('let _ = ah.emit("transcription-error", format!("Recording stop failed: {e}"));',
+          '''notices::raise(
+                                  &ah,
+                                  Notice::new(NoticeCode::RecordingFailed, NoticeSource::Dictation)
+                                      .with_detail(format!("Recording stop failed: {e}")),
+                              );
+                              let _ = ah.emit("transcription-error", format!("Recording stop failed: {e}"));''')
+          replace('''let _ = ah.emit(
+                                  "transcription-error",
+                                  format!("Failed to save recording: {e}"),
+                              );''',
+          '''notices::raise(
+                                  &ah,
+                                  Notice::new(NoticeCode::TranscriptionFailed, NoticeSource::Dictation)
+                                      .with_detail(format!("Failed to save recording: {e}")),
+                              );
+                              let _ = ah.emit(
+                                  "transcription-error",
+                                  format!("Failed to save recording: {e}"),
+                              );''')
+          replace('''let _ = ah.emit(
+                                  "transcription-error",
+                                  format!("Failed to save recording to History: {e}"),
+                              );''',
+          '''notices::raise(
+                                  &ah,
+                                  Notice::new(NoticeCode::TranscriptionFailed, NoticeSource::Dictation)
+                                      .with_detail(format!("Failed to save recording to History: {e}")),
+                              );
+                              let _ = ah.emit(
+                                  "transcription-error",
+                                  format!("Failed to save recording to History: {e}"),
+                              );''')
+          replace('''let _ = ah.emit("transcription-error", e);''',
+          '''notices::raise(
+                                      &ah,
+                                      Notice::new(NoticeCode::TranscriptionFailed, NoticeSource::Dictation)
+                                          .with_detail(e.to_string()),
+                                  );
+                                  let _ = ah.emit("transcription-error", e);''')
+          replace('''let paste_app = ah.clone();
+                      if let Err(e)''',
+          '''let paste_app = ah.clone();
+                      let post_process_failed = processed.post_process_failed;
+                      let session = RECORDING_SESSION.load(Ordering::SeqCst);
+                      if let Err(e)''')
+          replace('''Ok(()) => TranscriptionOutcome::Typed,
+                              Err(e) => {
+                                  error!("Failed to paste transcription: {e}");
+                                  let _ = paste_app.emit("paste-error", ());
+                                  TranscriptionOutcome::Failed
+                              }''',
+          '''Ok(()) => {
+                                  // A later recording must not lose its own error notice.
+                                  if RECORDING_SESSION.load(Ordering::SeqCst) == session {
+                                      notices::clear(&paste_app, NoticeSource::Dictation);
+                                      if post_process_failed {
+                                          notices::raise(
+                                              &paste_app,
+                                              Notice::new(
+                                                  NoticeCode::PostProcessFailed,
+                                                  NoticeSource::Dictation,
+                                              ),
+                                          );
+                                      }
+                                  }
+                                  TranscriptionOutcome::Typed
+                              }
+                              Err(e) => {
+                                  error!("Failed to paste transcription: {e}");
+                                  let notice = Notice::new(NoticeCode::PasteFailed, NoticeSource::Dictation)
+                                      .with_detail(e.to_string());
+                                  if RECORDING_SESSION.load(Ordering::SeqCst) == session {
+                                      notices::raise(&paste_app, notice);
+                                  } else {
+                                      notices::raise_without_overlay(&paste_app, notice);
+                                  }
+                                  let _ = paste_app.emit("paste-error", ());
+                                  TranscriptionOutcome::Failed
+                              }''')
+          replace('''error!("Failed to schedule transcription paste: {e}");
+                          let _ = ah.emit("paste-error", ());''',
+          '''error!("Failed to schedule transcription paste: {e}");
+                          notices::raise(
+                              &ah,
+                              Notice::new(NoticeCode::PasteFailed, NoticeSource::Dictation)
+                                  .with_detail(e.to_string()),
+                          );
+                          let _ = ah.emit("paste-error", ());''')
+          p.write_text(s)
+          PY
           bunx bun2nix@2.1.2 -o .nix/bun.nix
           sha256sum bun.lock | cut -d' ' -f1 > .nix/bun-lock-hash
           bun install --frozen-lockfile
@@ -94,4 +196,4 @@ jobs:
           echo "Parent and candidate SHA:"
           git log -2 --format='%H %s'
           git status --porcelain
-          git push origin HEAD:refs/heads/work/handy-sync-candidate-v2-2026-11-02
+          git push origin HEAD:refs/heads/work/handy-sync-candidate-v3-2026-11-02
