@@ -22,7 +22,7 @@ jobs:
           git config user.name "Handy Sync Bot"
           git config user.email "handy-sync@users.noreply.github.com"
           git fetch https://github.com/cjpais/Handy.git main
-          test "$(git rev-parse FETCH_HEAD)" = "b99b9af2c40c9765d496c2db68b4fecf8749e66b"
+          git cat-file -e b99b9af2c40c9765d496c2db68b4fecf8749e66b^{commit}
           git checkout --detach b99b9af2c40c9765d496c2db68b4fecf8749e66b
           git -c merge.conflictStyle=zdiff3 cherry-pick -X theirs --no-commit df04360560e5a8ec27c5505e3549fb5fa933b747
           # Upstream replaced legacy 'sonner' toasts with the notices framework.
@@ -181,6 +181,63 @@ jobs:
                           let _ = ah.emit("paste-error", ());''')
           p.write_text(s)
           PY
+          python3 - <<'PY'
+          from pathlib import Path
+          def patch(path, old, new):
+              p=Path(path)
+              s=p.read_text()
+              if s.count(old)!=1:
+                  raise RuntimeError(f"unique patch expected in {path}, found {s.count(old)}: {old[:100]}")
+              p.write_text(s.replace(old,new))
+          a="src-tauri/src/actions.rs"
+          patch(a, 'use tauri::{AppHandle, Manager};', 'use tauri::{AppHandle, Emitter, Manager};')
+          patch(a, 'async fn post_process_transcription(settings: &AppSettings, transcription: &str) -> Option<String> {', '''/// What became of a transcription's post-processing.
+          #[derive(Debug, PartialEq, Eq)]
+          enum PostProcessOutcome {
+              Skipped,
+              Done(String),
+              Failed,
+          }
+          
+          async fn post_process_transcription(
+              settings: &AppSettings,
+              transcription: &str,
+          ) -> PostProcessOutcome {''')
+          t="src-tauri/src/managers/transcription.rs"
+          patch(t, 'use crate::managers::model::{ModelManager, CODEX_LOCAL_MODEL_ID};',
+          '''use crate::managers::model::{ModelManager, CODEX_LOCAL_MODEL_ID};
+          use crate::notices::{self, Notice, NoticeCode, NoticeSource};
+          use crate::overlay;''')
+          patch(t, 'pub fn initiate_model_load(&self) {', 'pub fn initiate_model_load(&self, raise_notice: bool) -> bool {')
+          patch(t, '''if !reload_pending
+                      && cached_model_matches(
+                          is_loaded,
+                          current_model.as_deref(),
+                          &settings.selected_model,
+                      )
+                  {
+                      return;
+                  }''',
+          '''if !reload_pending
+                      && cached_model_matches(
+                          is_loaded,
+                          current_model.as_deref(),
+                          &settings.selected_model,
+                      )
+                  {
+                      return false;
+                  }''')
+          job="src-tauri/src/managers/transcription/job.rs"
+          patch(job,'self.initiate_model_load(false);','self.initiate_model_load(false);') if False else None
+          # The job should not raise a dictation-specific model load notice.
+          # It already calls the new bool overload with false after cherry-pick.
+          j=Path(job).read_text()
+          assert 'self.initiate_model_load(false)' in j
+          j="src-tauri/src/managers/transcription_jobs.rs"
+          s=Path(j).read_text()
+          assert s.count('return Ok(());')==2
+          Path(j).write_text(s.replace('return Ok(());','return Ok(JobEnd::Cancelled);'))
+          PY
           bunx bun2nix@2.1.2 -o .nix/bun.nix
           sha256sum bun.lock | cut -d' ' -f1 > .nix/bun-lock-hash
           bun install --frozen-lockfile
@@ -196,4 +253,4 @@ jobs:
           echo "Parent and candidate SHA:"
           git log -2 --format='%H %s'
           git status --porcelain
-          git push origin HEAD:refs/heads/work/handy-sync-candidate-v3-2026-11-02
+          git push origin HEAD:refs/heads/work/handy-sync-candidate-v4-2026-11-02
