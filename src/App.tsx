@@ -7,6 +7,11 @@ import {
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
 import { platform } from "@tauri-apps/plugin-os";
 import {
   checkAccessibilityPermission,
@@ -32,7 +37,7 @@ import { Sidebar, SidebarSection, SECTIONS_CONFIG } from "./components/Sidebar";
 import { WhatsNewGate } from "./components/whats-new";
 import { useSettings } from "./hooks/useSettings";
 import { useSettingsStore } from "./stores/settingsStore";
-import { commands } from "@/bindings";
+import { commands, events } from "@/bindings";
 import { deleteRetiredModel } from "@/lib/models/retired";
 import { NoticePanel } from "@/components/notices/NoticePanel";
 import { getLanguageDirection, initializeRTL } from "@/lib/utils/rtl";
@@ -70,6 +75,19 @@ const renderSettingsContent = (
   const ActiveComponent =
     SECTIONS_CONFIG[section]?.component || SECTIONS_CONFIG.general.component;
   return <ActiveComponent />;
+};
+
+const showTranscriptionErrorNotification = async (
+  title: string,
+  body: string,
+) => {
+  try {
+    let allowed = await isPermissionGranted();
+    if (!allowed) allowed = (await requestPermission()) === "granted";
+    if (allowed) sendNotification({ title, body });
+  } catch (error) {
+    console.warn("Failed to show transcription error notification:", error);
+  }
 };
 
 function App() {
@@ -148,6 +166,25 @@ function App() {
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [settings?.debug_mode, updateSetting]);
+
+  // Preserve the fork's native notification on transcription failure.
+  // Upstream now publishes errors via notices, not "transcription-error".
+  useEffect(() => {
+    const unlisten = events.noticesChanged.listen(({ payload: { raised } }) => {
+      if (
+        raised?.source === "dictation" &&
+        raised.code === "TranscriptionFailed"
+      ) {
+        void showTranscriptionErrorNotification(
+          t("errors.transcriptionFailedTitle"),
+          raised.detail ?? "",
+        );
+      }
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, [t]);
 
   const revealMainWindowForPermissions = async () => {
     try {
