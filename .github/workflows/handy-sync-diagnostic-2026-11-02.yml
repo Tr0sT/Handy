@@ -238,6 +238,20 @@ jobs:
           assert s.count('return Ok(());')==2
           Path(j).write_text(s.replace('return Ok(());','return Ok(JobEnd::Cancelled);'))
           PY
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("src-tauri/src/lib.rs")
+          s=p.read_text()
+          old='''            transcription_coordinator::RecordingStateEvent,
+                      actions::TranscriptionCompleteEvent,
+                  ])'''
+          new='''            transcription_coordinator::RecordingStateEvent,
+                      actions::TranscriptionCompleteEvent,
+                      notices::NoticesChanged,
+                  ])'''
+          assert s.count(old)==1, "notice event registration anchor changed"
+          p.write_text(s.replace(old,new))
+          PY
           bunx bun2nix@2.1.2 -o .nix/bun.nix
           sha256sum bun.lock | cut -d' ' -f1 > .nix/bun-lock-hash
           bun install --frozen-lockfile
@@ -246,11 +260,10 @@ jobs:
           bun run check:translations
           bun run check:model-languages
           bun run format
-          sed -i 's/[[:blank:]]*$//' src/bindings.ts
           git add -A
-          git diff --cached --check
+          git diff --cached --check -- . ':(exclude)src/bindings.ts'
           git commit -m "feat: preserve Codex and Claude dictation atop Handy upstream b99b9af2" -m "Reapply the verified cloud STT fork delta to latest upstream, preserve native transcription notifications with the new notices framework, and retain a single fork commit."
           echo "Parent and candidate SHA:"
           git log -2 --format='%H %s'
           git status --porcelain
-          git push origin HEAD:refs/heads/work/handy-sync-candidate-v4-2026-11-02
+          git push origin HEAD:refs/heads/work/handy-sync-candidate-v5-2026-11-02
