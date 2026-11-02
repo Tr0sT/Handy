@@ -87,6 +87,7 @@ jobs:
           bun run check:translations
           bun run check:model-languages
           bun run format
+          sed -i 's/[[:blank:]]*$//' src/bindings.ts
           git add -A
           git diff --cached --check
           git commit -m "feat: preserve Codex and Claude dictation atop Handy upstream b99b9af2" -m "Reapply the verified cloud STT fork delta to latest upstream, preserve native transcription notifications with the new notices framework, and retain a single fork commit."
