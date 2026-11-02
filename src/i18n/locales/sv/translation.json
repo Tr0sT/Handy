@@ -529,7 +529,8 @@
           "none": "Ingen",
           "externalScript": "Externt skript"
         },
-        "externalScriptPlaceholder": "/sökväg/till/ditt/skript.sh"
+        "externalScriptPlaceholder": "/sökväg/till/ditt/skript.sh",
+        "unicodeFallback": "Urklippsalternativ för Unicode"
       },
       "typingTool": {
         "title": "Skrivverktyg",

@@ -529,7 +529,8 @@
           "none": "Yok",
           "externalScript": "Harici Betik"
         },
-        "externalScriptPlaceholder": "/dosya/yolu/betik.sh"
+        "externalScriptPlaceholder": "/dosya/yolu/betik.sh",
+        "unicodeFallback": "Unicode için pano alternatifi"
       },
       "typingTool": {
         "title": "Yazma Aracı",

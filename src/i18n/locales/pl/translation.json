@@ -529,7 +529,8 @@
           "none": "Brak",
           "externalScript": "Skrypt zewnętrzny"
         },
-        "externalScriptPlaceholder": "/sciezka/do/twojego/skryptu.sh"
+        "externalScriptPlaceholder": "/sciezka/do/twojego/skryptu.sh",
+        "unicodeFallback": "Wklejanie ze schowka dla Unicode"
       },
       "typingTool": {
         "title": "Narzędzie do wpisywania",

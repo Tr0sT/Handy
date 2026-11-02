@@ -529,7 +529,8 @@
           "none": "कोई नहीं",
           "externalScript": "बाहरी स्क्रिप्ट"
         },
-        "externalScriptPlaceholder": "/path/to/your/script.sh"
+        "externalScriptPlaceholder": "/path/to/your/script.sh",
+        "unicodeFallback": "Unicode के लिए क्लिपबोर्ड विकल्प"
       },
       "typingTool": {
         "title": "टाइपिंग टूल",

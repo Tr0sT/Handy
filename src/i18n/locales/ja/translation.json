@@ -529,7 +529,8 @@
           "none": "なし",
           "externalScript": "外部スクリプト"
         },
-        "externalScriptPlaceholder": "/path/to/your/script.sh"
+        "externalScriptPlaceholder": "/path/to/your/script.sh",
+        "unicodeFallback": "Unicode のクリップボード代替入力"
       },
       "typingTool": {
         "title": "タイピングツール",

@@ -529,7 +529,8 @@
           "none": "无",
           "externalScript": "外部脚本"
         },
-        "externalScriptPlaceholder": "/path/to/your/script.sh"
+        "externalScriptPlaceholder": "/path/to/your/script.sh",
+        "unicodeFallback": "Unicode 剪贴板备用输入"
       },
       "typingTool": {
         "title": "输入工具",

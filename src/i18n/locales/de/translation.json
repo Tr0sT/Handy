@@ -529,7 +529,8 @@
           "none": "Keine",
           "externalScript": "Externes Skript"
         },
-        "externalScriptPlaceholder": "/pfad/zu/ihrem/skript.sh"
+        "externalScriptPlaceholder": "/pfad/zu/ihrem/skript.sh",
+        "unicodeFallback": "Zwischenablage-Ersatz für Unicode"
       },
       "typingTool": {
         "title": "Eingabetool",

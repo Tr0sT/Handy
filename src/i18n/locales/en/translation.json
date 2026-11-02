@@ -529,7 +529,8 @@
           "none": "None",
           "externalScript": "External Script"
         },
-        "externalScriptPlaceholder": "/path/to/your/script.sh"
+        "externalScriptPlaceholder": "/path/to/your/script.sh",
+        "unicodeFallback": "Clipboard fallback for Unicode"
       },
       "typingTool": {
         "title": "Typing Tool",

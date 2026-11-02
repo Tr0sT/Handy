@@ -529,7 +529,8 @@
           "none": "Немає",
           "externalScript": "Зовнішній скрипт"
         },
-        "externalScriptPlaceholder": "/path/to/your/script.sh"
+        "externalScriptPlaceholder": "/path/to/your/script.sh",
+        "unicodeFallback": "Вставлення через буфер для Unicode"
       },
       "typingTool": {
         "title": "Інструмент введення",
