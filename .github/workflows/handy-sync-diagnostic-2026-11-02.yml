@@ -1,19 +1,21 @@
-name: "Temporary Handy upstream cherry-pick diagnostic"
+name: "Temporary Handy combined-tree preparation"
 on:
   push:
     branches: [work/handy-sync-rebase-helper-2026-11-02]
 permissions:
-  contents: read
+  contents: write
 jobs:
-  diagnose:
+  prepare:
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          persist-credentials: false
-      - name: Dry-run single fork commit onto new upstream
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - name: Apply existing fork delta on top of final upstream
         shell: bash
         run: |
           set -euo pipefail
@@ -22,18 +24,21 @@ jobs:
           git fetch https://github.com/cjpais/Handy.git main
           test "$(git rev-parse FETCH_HEAD)" = "b99b9af2c40c9765d496c2db68b4fecf8749e66b"
           git checkout --detach b99b9af2c40c9765d496c2db68b4fecf8749e66b
-          set +e
-          git cherry-pick --no-commit df04360560e5a8ec27c5505e3549fb5fa933b747
-          rc=$?
-          set -e
-          echo "Cherry-pick exit: $rc"
-          echo "Conflicting paths:"
-          git diff --name-only --diff-filter=U
-          echo "Working-tree changes:"
-          git status --short
-          if [ "$rc" -ne 0 ]; then
-            echo "Diff conflict sections:"
-            git diff --check || true
-            exit 1
-          fi
+          git -c merge.conflictStyle=zdiff3 cherry-pick -X theirs --no-commit df04360560e5a8ec27c5505e3549fb5fa933b747
+          echo "Fork additions preserved; notices in resulting tree:"
+          rg -n 'notices::(raise|clear)|NoticePanel|noticeStore' src-tauri/src src/App.tsx | head -60 || true
+          bunx bun2nix@2.1.2 -o .nix/bun.nix
+          sha256sum bun.lock | cut -d' ' -f1 > .nix/bun-lock-hash
+          bun install --frozen-lockfile
+          bun run build
+          bun run lint
+          bun run check:translations
+          bun run check:model-languages
+          bun run format
+          git add -A
           git diff --cached --check
+          git commit -m "feat: preserve Codex and Claude dictation atop Handy upstream b99b9af2" -m "Reapply the verified cloud STT fork delta to latest upstream, including the notification framework, while retaining one fork commit."
+          echo "Parent and candidate SHA:"
+          git log -2 --format='%H %s'
+          git status --porcelain
+          git push origin HEAD:refs/heads/work/handy-sync-candidate-v2-2026-11-02
