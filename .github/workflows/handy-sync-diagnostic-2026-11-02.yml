@@ -15,7 +15,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.2"
-      - name: Apply existing fork delta on top of final upstream
+      - name: Apply existing fork delta on top of latest upstream
         shell: bash
         run: |
           set -euo pipefail
@@ -25,8 +25,60 @@ jobs:
           test "$(git rev-parse FETCH_HEAD)" = "b99b9af2c40c9765d496c2db68b4fecf8749e66b"
           git checkout --detach b99b9af2c40c9765d496c2db68b4fecf8749e66b
           git -c merge.conflictStyle=zdiff3 cherry-pick -X theirs --no-commit df04360560e5a8ec27c5505e3549fb5fa933b747
-          echo "Fork additions preserved; notices in resulting tree:"
-          rg -n 'notices::(raise|clear)|NoticePanel|noticeStore' src-tauri/src src/App.tsx | head -60 || true
+          # Upstream replaced legacy 'sonner' toasts with the notices framework.
+          # Reapply only the fork's OS notification feature on the new typed event.
+          git show HEAD:src/App.tsx > src/App.tsx
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("src/App.tsx")
+          t=p.read_text()
+          old='import { platform } from "@tauri-apps/plugin-os";'
+          assert t.count(old)==1
+          t=t.replace(old,'''import {
+            isPermissionGranted,
+            requestPermission,
+            sendNotification,
+          } from "@tauri-apps/plugin-notification";
+          '''.replace('          ', '')+old)
+          old='import { commands } from "@/bindings";'
+          assert t.count(old)==1
+          t=t.replace(old,'import { commands, events } from "@/bindings";')
+          old='function App() {'
+          assert t.count(old)==1
+          helper='''const showTranscriptionErrorNotification = async (title: string, body: string) => {
+            try {
+              let allowed = await isPermissionGranted();
+              if (!allowed) allowed = (await requestPermission()) === "granted";
+              if (allowed) sendNotification({ title, body });
+            } catch (error) {
+              console.warn("Failed to show transcription error notification:", error);
+            }
+          };
+
+          '''
+          t=t.replace(old,helper+old)
+          old='  const revealMainWindowForPermissions = async () => {'
+          assert t.count(old)==1
+          listener='''  // Preserve the fork's native notification on transcription failure.
+            // Upstream now publishes errors via notices, not "transcription-error".
+            useEffect(() => {
+              const unlisten = events.noticesChanged.listen(({ payload: { raised } }) => {
+                if (raised?.source === "dictation" && raised.code === "TranscriptionFailed") {
+                  void showTranscriptionErrorNotification(
+                    t("errors.transcriptionFailedTitle"),
+                    raised.detail ?? "",
+                  );
+                }
+              });
+              return () => {
+                void unlisten.then((fn) => fn());
+              };
+            }, [t]);
+
+          '''
+          t=t.replace(old,listener+old)
+          p.write_text(t)
+          PY
           bunx bun2nix@2.1.2 -o .nix/bun.nix
           sha256sum bun.lock | cut -d' ' -f1 > .nix/bun-lock-hash
           bun install --frozen-lockfile
@@ -37,7 +89,7 @@ jobs:
           bun run format
           git add -A
           git diff --cached --check
-          git commit -m "feat: preserve Codex and Claude dictation atop Handy upstream b99b9af2" -m "Reapply the verified cloud STT fork delta to latest upstream, including the notification framework, while retaining one fork commit."
+          git commit -m "feat: preserve Codex and Claude dictation atop Handy upstream b99b9af2" -m "Reapply the verified cloud STT fork delta to latest upstream, preserve native transcription notifications with the new notices framework, and retain a single fork commit."
           echo "Parent and candidate SHA:"
           git log -2 --format='%H %s'
           git status --porcelain
