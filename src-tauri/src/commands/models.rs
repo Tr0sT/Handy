@@ -1,4 +1,6 @@
-use crate::managers::model::{ModelInfo, ModelManager, RetiredModel, LANGUAGE_DETECTOR_ID};
+use crate::managers::model::{
+    ModelInfo, ModelManager, RetiredModel, CODEX_LOCAL_MODEL_ID, LANGUAGE_DETECTOR_ID,
+};
 use crate::managers::transcription::{ModelStateEvent, TranscriptionManager};
 use crate::settings::{get_settings, write_settings, ModelUnloadTimeout};
 use log::error;
@@ -178,6 +180,16 @@ pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String
     settings.selected_model = model_id.to_string();
 
     write_settings(app, settings);
+
+    if model_id == CODEX_LOCAL_MODEL_ID {
+        if let Err(e) = transcription_manager.load_model(model_id) {
+            let mut settings = get_settings(app);
+            settings.selected_model = old_model;
+            write_settings(app, settings);
+            return Err(e.to_string());
+        }
+        return Ok(());
+    }
 
     // Skip eager loading if unload is set to "Immediately" — the model
     // will be loaded on-demand during the next transcription.

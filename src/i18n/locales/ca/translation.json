@@ -530,7 +530,8 @@
           "none": "Cap",
           "externalScript": "Script extern"
         },
-        "externalScriptPlaceholder": "/camí/al/vostre/script.sh"
+        "externalScriptPlaceholder": "/camí/al/vostre/script.sh",
+        "unicodeFallback": "Alternativa del porta-retalls per a Unicode"
       },
       "typingTool": {
         "title": "Eina d'escriptura",
