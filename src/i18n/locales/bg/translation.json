@@ -536,7 +536,8 @@
           "none": "Няма",
           "externalScript": "Външен скрипт"
         },
-        "externalScriptPlaceholder": "/път/към/вашия/script.sh"
+        "externalScriptPlaceholder": "/път/към/вашия/script.sh",
+        "unicodeFallback": "Поставяне чрез клипборда за Unicode"
       },
       "typingTool": {
         "title": "Инструмент за писане",
