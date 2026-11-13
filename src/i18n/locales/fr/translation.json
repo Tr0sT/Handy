@@ -536,7 +536,8 @@
           "none": "Aucun",
           "externalScript": "Script externe"
         },
-        "externalScriptPlaceholder": "/chemin/vers/votre/script.sh"
+        "externalScriptPlaceholder": "/chemin/vers/votre/script.sh",
+        "unicodeFallback": "Repli sur le presse-papiers pour Unicode"
       },
       "typingTool": {
         "title": "Outil de frappe",

@@ -536,7 +536,8 @@
           "none": "ללא",
           "externalScript": "סקריפט חיצוני"
         },
-        "externalScriptPlaceholder": "/path/to/your/script.sh"
+        "externalScriptPlaceholder": "/path/to/your/script.sh",
+        "unicodeFallback": "הדבקה מהלוח כחלופה ל־Unicode"
       },
       "typingTool": {
         "title": "כלי הקלדה",

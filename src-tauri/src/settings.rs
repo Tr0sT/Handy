@@ -170,6 +170,28 @@ pub enum PasteMethod {
     ExternalScript,
 }
 
+/// Clipboard chord used only when Direct input cannot deliver Unicode.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectInputFallback {
+    #[default]
+    CtrlV,
+    CtrlShiftV,
+    ShiftInsert,
+    None,
+}
+
+impl DirectInputFallback {
+    pub fn paste_method(self) -> Option<PasteMethod> {
+        match self {
+            Self::CtrlV => Some(PasteMethod::CtrlV),
+            Self::CtrlShiftV => Some(PasteMethod::CtrlShiftV),
+            Self::ShiftInsert => Some(PasteMethod::ShiftInsert),
+            Self::None => None,
+        }
+    }
+}
+
 /// How the transcribe shortcut's key events drive a recording.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
 #[serde(rename_all = "snake_case")]
@@ -474,6 +496,8 @@ pub struct AppSettings {
     pub recording_retention_period: RecordingRetentionPeriod,
     #[serde(default)]
     pub paste_method: PasteMethod,
+    #[serde(default)]
+    pub direct_input_fallback: DirectInputFallback,
     #[serde(default)]
     pub clipboard_handling: ClipboardHandling,
     #[serde(default = "default_auto_submit")]
@@ -1031,6 +1055,7 @@ pub fn get_default_settings() -> AppSettings {
         history_limit: default_history_limit(),
         recording_retention_period: default_recording_retention_period(),
         paste_method: PasteMethod::default(),
+        direct_input_fallback: DirectInputFallback::default(),
         clipboard_handling: ClipboardHandling::default(),
         auto_submit: default_auto_submit(),
         auto_submit_key: AutoSubmitKey::default(),
@@ -2144,5 +2169,38 @@ mod tests {
         ));
         assert!(!linux_self_update_possible(Some(BundleKind::Other), all));
         assert!(!linux_self_update_possible(None, all));
+    }
+}
+
+#[cfg(test)]
+mod direct_fallback_tests {
+    use super::*;
+    #[test]
+    fn fallback_only_maps_to_supported_clipboard_chords() {
+        assert_eq!(
+            DirectInputFallback::CtrlV.paste_method(),
+            Some(PasteMethod::CtrlV)
+        );
+        assert_eq!(
+            DirectInputFallback::CtrlShiftV.paste_method(),
+            Some(PasteMethod::CtrlShiftV)
+        );
+        assert_eq!(
+            DirectInputFallback::ShiftInsert.paste_method(),
+            Some(PasteMethod::ShiftInsert)
+        );
+        assert_eq!(DirectInputFallback::None.paste_method(), None);
+        assert!(serde_json::from_str::<DirectInputFallback>("\"direct\"").is_err());
+        assert!(serde_json::from_str::<DirectInputFallback>("\"external_script\"").is_err());
+    }
+    #[test]
+    fn legacy_settings_retain_ctrl_v_fallback() {
+        #[derive(Deserialize)]
+        struct Legacy {
+            #[serde(default)]
+            direct_input_fallback: DirectInputFallback,
+        }
+        let legacy: Legacy = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.direct_input_fallback, DirectInputFallback::CtrlV);
     }
 }

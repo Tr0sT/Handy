@@ -536,7 +536,8 @@
           "none": "Žádné",
           "externalScript": "Externí skript"
         },
-        "externalScriptPlaceholder": "/cesta/k/vasemu/skriptu.sh"
+        "externalScriptPlaceholder": "/cesta/k/vasemu/skriptu.sh",
+        "unicodeFallback": "Náhradní vložení ze schránky pro Unicode"
       },
       "typingTool": {
         "title": "Nástroj pro psaní",

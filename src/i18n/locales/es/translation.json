@@ -536,7 +536,8 @@
           "none": "Ninguno",
           "externalScript": "Script externo"
         },
-        "externalScriptPlaceholder": "/ruta/a/su/script.sh"
+        "externalScriptPlaceholder": "/ruta/a/su/script.sh",
+        "unicodeFallback": "Alternativa del portapapeles para Unicode"
       },
       "typingTool": {
         "title": "Herramienta de escritura",
