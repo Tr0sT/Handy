@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { CodexLocalAuthPanel } from "./CodexLocalAuthPanel";
 import { useTranslation } from "react-i18next";
 import { RefreshCw } from "lucide-react";
 import { Tooltip } from "@/components/ui/Tooltip";
@@ -176,6 +177,12 @@ export const ModelsSettings: React.FC<ModelsSettingsProps> = ({
         }
         thinEdge
       />
+      <section className="mt-4 px-3 py-3 border-t border-line">
+        <h2 className="text-sm font-semibold mb-2">
+          {t("settings.models.codexLocal.name", "Codex Local")}
+        </h2>
+        <CodexLocalAuthPanel />
+      </section>
     </div>
   );
 };

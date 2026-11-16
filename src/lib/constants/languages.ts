@@ -136,3 +136,31 @@ export const searchLanguages = (
   }
   return hits.sort((a, b) => a[0] - b[0]).map(([, l]) => l);
 };
+
+/**
+ * Claude.ai voice pipeline supported language codes (20 languages).
+ * Extracted from Claude Code's voice_stream module — the backend only
+ * accepts these codes via the `language` query parameter.
+ */
+export const CLAUDE_VOICE_LANGUAGES = new Set([
+  "en",
+  "es",
+  "fr",
+  "ja",
+  "de",
+  "pt",
+  "it",
+  "ko",
+  "hi",
+  "id",
+  "ru",
+  "pl",
+  "tr",
+  "nl",
+  "uk",
+  "el",
+  "cs",
+  "da",
+  "sv",
+  "no",
+]);

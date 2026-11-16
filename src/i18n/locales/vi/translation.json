@@ -536,7 +536,8 @@
           "none": "Không có",
           "externalScript": "Script bên ngoài"
         },
-        "externalScriptPlaceholder": "/duong-dan/toi/script.sh"
+        "externalScriptPlaceholder": "/duong-dan/toi/script.sh",
+        "unicodeFallback": "Phương án dán qua bộ nhớ tạm cho Unicode"
       },
       "typingTool": {
         "title": "Công cụ gõ",

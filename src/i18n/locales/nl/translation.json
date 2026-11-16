@@ -536,7 +536,8 @@
           "none": "Geen",
           "externalScript": "Extern script"
         },
-        "externalScriptPlaceholder": "/pad/naar/je/script.sh"
+        "externalScriptPlaceholder": "/pad/naar/je/script.sh",
+        "unicodeFallback": "Klembordfallback voor Unicode"
       },
       "typingTool": {
         "title": "Typgereedschap",

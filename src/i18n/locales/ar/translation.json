@@ -536,7 +536,8 @@
           "none": "بلا",
           "externalScript": "نص برمجي خارجي"
         },
-        "externalScriptPlaceholder": "/path/to/your/script.sh"
+        "externalScriptPlaceholder": "/path/to/your/script.sh",
+        "unicodeFallback": "اللصق عبر الحافظة كبديل لـ Unicode"
       },
       "typingTool": {
         "title": "أداة الكتابة",
