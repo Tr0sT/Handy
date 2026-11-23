@@ -536,7 +536,8 @@
           "none": "ไม่วาง",
           "externalScript": "สคริปต์ภายนอก"
         },
-        "externalScriptPlaceholder": "/path/to/your/script.sh"
+        "externalScriptPlaceholder": "/path/to/your/script.sh",
+        "unicodeFallback": "ใช้คลิปบอร์ดเป็นวิธีสำรองสำหรับอักขระ Unicode"
       },
       "typingTool": {
         "title": "เครื่องมือช่วยพิมพ์",

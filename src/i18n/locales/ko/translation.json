@@ -536,7 +536,8 @@
           "none": "없음",
           "externalScript": "외부 스크립트"
         },
-        "externalScriptPlaceholder": "/path/to/your/script.sh"
+        "externalScriptPlaceholder": "/path/to/your/script.sh",
+        "unicodeFallback": "유니코드용 클립보드 대체 입력"
       },
       "typingTool": {
         "title": "타이핑 도구",

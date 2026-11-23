@@ -536,7 +536,8 @@
           "none": "Nenhum",
           "externalScript": "Script externo"
         },
-        "externalScriptPlaceholder": "/caminho/para/seu/script.sh"
+        "externalScriptPlaceholder": "/caminho/para/seu/script.sh",
+        "unicodeFallback": "Alternativa da área de transferência para Unicode"
       },
       "typingTool": {
         "title": "Ferramenta de digitação",
